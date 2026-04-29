@@ -4,15 +4,19 @@ import {
   MessageSquareCode, Search, Sparkles, Loader2, PieChart as PieChartIcon,
   Layers, Wand2, FileCode2, GitBranch, Settings, Sun, Moon, Download,
   AlertTriangle, CheckCircle2, TrendingUp, ArrowRight, X, Menu, Upload,
-  Terminal, ChevronRight,
+  Terminal, ChevronRight, Github, ListTodo, FolderOpen,
 } from "lucide-react";
 import { useState, useEffect, ReactNode, useCallback, useRef } from "react";
-import { askBob, analyzeBobRepo, BobInsight, BobRepoAnalysis } from "./services/bobService";
+import {
+  askBobStream, analyzeBobRepo, analyzeFile, generateSprintPlan,
+  fetchGitHubRepo, analyzeGitHubRepo,
+  BobInsight, BobRepoAnalysis, SprintPlan, GitHubRepoInfo,
+} from "./services/bobService";
 import {
   PieChart, Pie, Cell, ResponsiveContainer, Tooltip, BarChart, Bar, XAxis, YAxis,
 } from "recharts";
 
-// ─── Static data ─────────────────────────────────────────────────────────────
+// ─── Static data ──────────────────────────────────────────────────────────────
 const REPO_DATA = [
   { name: "TypeScript", value: 65, color: "#0F62FE" },
   { name: "Testing",    value: 15, color: "#D12771" },
@@ -27,17 +31,17 @@ const COMPLEXITY_DATA = [
   { module: "UI",    score: 30 },
 ];
 const ARCHITECTURE = [
-  { label: "Auth Pattern",  value: "JWT + Cascading Redis Cache",    status: "Verified" },
-  { label: "Data Flow",     value: "Unidirectional via Store Hooks", status: "Stable" },
-  { label: "API Strategy",  value: "RESTful with Zod Validation",    status: "Optimized" },
+  { label: "Auth Pattern",  value: "JWT + Cascading Redis Cache",    status: "Verified"   },
+  { label: "Data Flow",     value: "Unidirectional via Store Hooks", status: "Stable"     },
+  { label: "API Strategy",  value: "RESTful with Zod Validation",    status: "Optimized"  },
   { label: "Deployment",    value: "Dockerized Node Express",        status: "Production" },
 ];
 const FILES = [
-  { name: "authService.ts", type: "logic",          complexity: "High" },
-  { name: "dataMapper.ts",  type: "transformation", complexity: "Med"  },
-  { name: "apiClient.ts",   type: "network",        complexity: "Med"  },
-  { name: "app.tsx",        type: "ui",             complexity: "Low"  },
-  { name: "schema.prisma",  type: "database",       complexity: "High" },
+  { name: "authService.ts", complexity: "High" },
+  { name: "dataMapper.ts",  complexity: "Med"  },
+  { name: "apiClient.ts",   complexity: "Med"  },
+  { name: "app.tsx",        complexity: "Low"  },
+  { name: "schema.prisma",  complexity: "High" },
 ];
 const BOOT_STEPS = [
   "Connecting to IBM Bob Core...",
@@ -46,48 +50,81 @@ const BOOT_STEPS = [
   "Mapping architectural patterns...",
   "Context engine ready.",
 ];
+const PRIORITY_COLORS: Record<string, string> = {
+  Critical: "bg-red-500",
+  High:     "bg-brand-pink",
+  Medium:   "bg-brand-yellow",
+  Low:      "bg-brand-teal",
+};
+const EFFORT_COLORS: Record<string, string> = {
+  Small:  "text-brand-teal",
+  Medium: "text-brand-yellow",
+  Large:  "text-brand-pink",
+};
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
 type Recommendation = {
   id: string; message: string; time: string;
   action?: { type: string; icon: ReactNode };
 };
-type Workflow = {
-  id: string; label: string; progress: number; icon: ReactNode; done?: boolean;
-};
+type Workflow = { id: string; label: string; progress: number; icon: ReactNode; done?: boolean; };
 type ChatMessage = {
-  id: string; role: "user" | "bob"; content: string;
+  id: string; role: "user" | "bob"; content: string; streaming?: boolean;
   suggestions?: string[]; impact?: string; category?: string;
 };
 
-// ─── Root ────────────────────────────────────────────────────────────────────
+const STORAGE_KEY = "spark_studio_chat_v1";
+
+// ─── Root ─────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [booted,        setBooted]        = useState(false);
-  const [bootStep,      setBootStep]      = useState(0);
-  const [showLanding,   setShowLanding]   = useState(true);
-  const [activeTab,     setActiveTab]     = useState("intelligence");
-  const [darkMode,      setDarkMode]      = useState(false);
-  const [mobileMenuOpen,setMobileMenuOpen]= useState(false);
-  const [query,         setQuery]         = useState("");
-  const [loading,       setLoading]       = useState(false);
-  const [repoLoading,   setRepoLoading]   = useState(false);
-  const [insight,       setInsight]       = useState<BobInsight | null>(null);
-  const [repoAnalysis,  setRepoAnalysis]  = useState<BobRepoAnalysis | null>(null);
-  const [selectedFile,  setSelectedFile]  = useState<string | null>(null);
-  const [chatHistory,   setChatHistory]   = useState<ChatMessage[]>([]);
-  const [codeInput,     setCodeInput]     = useState("");
-  const [showCodeInput, setShowCodeInput] = useState(false);
+  const [booted,         setBooted]         = useState(false);
+  const [bootStep,       setBootStep]       = useState(0);
+  const [showLanding,    setShowLanding]    = useState(true);
+  const [activeTab,      setActiveTab]      = useState("intelligence");
+  const [darkMode,       setDarkMode]       = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [query,          setQuery]          = useState("");
+  const [loading,        setLoading]        = useState(false);
+  const [repoLoading,    setRepoLoading]    = useState(false);
+  const [repoAnalysis,   setRepoAnalysis]   = useState<BobRepoAnalysis | null>(null);
+  const [selectedFile,   setSelectedFile]   = useState<string | null>(null);
+  const [chatHistory,    setChatHistory]    = useState<ChatMessage[]>(() => {
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); } catch { return []; }
+  });
+
+  // Code paste modal
+  const [showCodeInput,  setShowCodeInput]  = useState(false);
+  const [codeInput,      setCodeInput]      = useState("");
+
+  // File upload
+  const [uploadedFile,   setUploadedFile]   = useState<{ name: string; content: string } | null>(null);
+  const [uploadLoading,  setUploadLoading]  = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // GitHub connector
+  const [showGithub,     setShowGithub]     = useState(false);
+  const [githubUrl,      setGithubUrl]      = useState("");
+  const [githubLoading,  setGithubLoading]  = useState(false);
+  const [githubInfo,     setGithubInfo]     = useState<GitHubRepoInfo | null>(null);
+  const [githubError,    setGithubError]    = useState("");
+
+  // Sprint planner
+  const [showSprint,     setShowSprint]     = useState(false);
+  const [sprintInput,    setSprintInput]    = useState("");
+  const [sprintLoading,  setSprintLoading]  = useState(false);
+  const [sprintPlan,     setSprintPlan]     = useState<SprintPlan | null>(null);
+
   const [recommendations, setRecommendations] = useState<Recommendation[]>([
     { id: "r1", message: "Found 3 circular dependencies in /src/lib", time: "Now" },
     { id: "r2", message: "Exporting 'User' type would fix 12 TS errors", time: "5m ago" },
   ]);
   const [activeWorkflows, setActiveWorkflows] = useState<Workflow[]>([
-    { id: "w1", label: "Automating Docs",  progress: 64, icon: <Code2 size={16} /> },
-    { id: "w2", label: "Mapping Data flow",progress: 82, icon: <Cpu  size={16} /> },
+    { id: "w1", label: "Automating Docs",   progress: 64, icon: <Code2 size={16} /> },
+    { id: "w2", label: "Mapping Data flow", progress: 82, icon: <Cpu  size={16} /> },
   ]);
 
   const workflowIntervals = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
-  const chatEndRef         = useRef<HTMLDivElement>(null);
+  const chatEndRef        = useRef<HTMLDivElement>(null);
 
   // Boot animation
   useEffect(() => {
@@ -95,35 +132,32 @@ export default function App() {
     const t = setInterval(() => {
       step++;
       setBootStep(step);
-      if (step >= BOOT_STEPS.length) {
-        clearInterval(t);
-        setTimeout(() => setBooted(true), 600);
-      }
+      if (step >= BOOT_STEPS.length) { clearInterval(t); setTimeout(() => setBooted(true), 600); }
     }, 520);
     return () => clearInterval(t);
   }, []);
 
+  // Persist chat history
   useEffect(() => {
-    document.documentElement.classList.toggle("dark", darkMode);
-  }, [darkMode]);
-
-  // Scroll chat to bottom
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(chatHistory.slice(-50)));
   }, [chatHistory]);
+
+  useEffect(() => { document.documentElement.classList.toggle("dark", darkMode); }, [darkMode]);
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatHistory]);
+  useEffect(() => { return () => { workflowIntervals.current.forEach(i => clearInterval(i)); }; }, []);
 
   // Live pulse
   useEffect(() => {
-    const proactiveInsights = [
-      { msg: "Detected redundant state in authService.ts",    type: "Refactoring",   icon: <GitBranch   size={16} /> },
-      { msg: "API client could use a retry wrapper",           type: "Safety",        icon: <ShieldCheck size={16} /> },
-      { msg: "Database schema missing index on email field",   type: "DevOps",        icon: <Settings    size={16} /> },
-      { msg: "Logic gap detected in session validation",       type: "Safety",        icon: <ShieldCheck size={16} /> },
-      { msg: "Unit test coverage for hooks is below 20%",      type: "Documentation", icon: <FileCode2   size={16} /> },
-      { msg: "Potential memory leak in useWebSocket hook",     type: "Performance",   icon: <AlertTriangle size={16}/> },
+    const items = [
+      { msg: "Detected redundant state in authService.ts",  type: "Refactoring",   icon: <GitBranch    size={16} /> },
+      { msg: "API client could use a retry wrapper",         type: "Safety",        icon: <ShieldCheck  size={16} /> },
+      { msg: "Database schema missing index on email field", type: "DevOps",        icon: <Settings     size={16} /> },
+      { msg: "Logic gap detected in session validation",     type: "Safety",        icon: <ShieldCheck  size={16} /> },
+      { msg: "Unit test coverage for hooks is below 20%",    type: "Documentation", icon: <FileCode2    size={16} /> },
+      { msg: "Potential memory leak in useWebSocket hook",   type: "Performance",   icon: <AlertTriangle size={16}/> },
     ];
     const interval = setInterval(() => {
-      const pick = proactiveInsights[Math.floor(Math.random() * proactiveInsights.length)];
+      const pick = items[Math.floor(Math.random() * items.length)];
       const id   = `live-${Date.now()}`;
       setRecommendations(prev => [
         { id, message: pick.msg, time: "Just now", action: { type: pick.type, icon: pick.icon } },
@@ -133,63 +167,129 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
-  useEffect(() => {
-    return () => { workflowIntervals.current.forEach(i => clearInterval(i)); };
-  }, []);
-
-  // Ask Bob (with chat history)
+  // ── Core: ask Bob with streaming ───────────────────────────────────────────
   const handleAskBob = useCallback(async (overrideQuery?: string, codeCtx?: string) => {
     const q = (overrideQuery ?? query).trim();
     if (!q) return;
 
     const userMsg: ChatMessage = { id: `u-${Date.now()}`, role: "user", content: q };
-    setChatHistory(prev => [...prev, userMsg]);
+    const bobId = `b-${Date.now()}`;
+    const bobPlaceholder: ChatMessage = { id: bobId, role: "bob", content: "", streaming: true };
+
+    setChatHistory(prev => [...prev, userMsg, bobPlaceholder]);
     setQuery("");
     setLoading(true);
-    setInsight(null);
 
     const context = codeCtx
       ? `User-provided code:\n${codeCtx}`
-      : selectedFile
-        ? `File context: ${selectedFile}`
-        : undefined;
+      : selectedFile ? `File context: ${selectedFile}` : undefined;
 
-    const result = await askBob(q, context);
-    setInsight(result);
+    const result = await askBobStream(
+      q,
+      (streamedText) => {
+        setChatHistory(prev => prev.map(m =>
+          m.id === bobId ? { ...m, content: streamedText } : m
+        ));
+      },
+      context
+    );
 
-    const bobMsg: ChatMessage = {
-      id: `b-${Date.now()}`, role: "bob",
-      content:     result.explanation,
-      suggestions: result.suggestions,
-      impact:      result.impact,
-      category:    result.category,
-    };
-    setChatHistory(prev => [...prev, bobMsg]);
+    // Final update with all fields
+    setChatHistory(prev => prev.map(m =>
+      m.id === bobId ? {
+        ...m,
+        content:     result.explanation,
+        suggestions: result.suggestions,
+        impact:      result.impact,
+        category:    result.category,
+        streaming:   false,
+      } : m
+    ));
     setLoading(false);
   }, [query, selectedFile]);
+
+  // ── File upload ────────────────────────────────────────────────────────────
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadLoading(true);
+    const content = await file.text();
+    setUploadedFile({ name: file.name, content });
+
+    const userMsg: ChatMessage = {
+      id: `u-${Date.now()}`, role: "user",
+      content: `Analyze my uploaded file: ${file.name}`,
+    };
+    const bobId = `b-${Date.now()}`;
+    const bobPlaceholder: ChatMessage = { id: bobId, role: "bob", content: "", streaming: true };
+    setChatHistory(prev => [...prev, userMsg, bobPlaceholder]);
+    setActiveTab("explainer");
+
+    const result = await analyzeFile(file.name, content);
+    setChatHistory(prev => prev.map(m =>
+      m.id === bobId ? { ...m, content: result.explanation, suggestions: result.suggestions, impact: result.impact, category: result.category, streaming: false } : m
+    ));
+    setUploadLoading(false);
+    if (e.target) e.target.value = "";
+  };
 
   const selectFile = (fileName: string) => {
     const q = `Explain the logic and architecture of ${fileName}`;
     setSelectedFile(fileName);
-    setQuery(q);
     setActiveTab("explainer");
-    (async () => {
-      const userMsg: ChatMessage = { id: `u-${Date.now()}`, role: "user", content: q };
-      setChatHistory(prev => [...prev, userMsg]);
-      setLoading(true);
-      setInsight(null);
-      const result = await askBob(q, `File context: ${fileName}`);
-      setInsight(result);
-      const bobMsg: ChatMessage = {
-        id: `b-${Date.now()}`, role: "bob",
-        content: result.explanation, suggestions: result.suggestions,
-        impact: result.impact, category: result.category,
-      };
-      setChatHistory(prev => [...prev, bobMsg]);
-      setLoading(false);
-    })();
+    handleAskBob(q, `File context: ${fileName}`);
   };
 
+  // ── Code paste ─────────────────────────────────────────────────────────────
+  const handleCodeAnalyze = () => {
+    if (!codeInput.trim()) return;
+    setShowCodeInput(false);
+    setActiveTab("explainer");
+    handleAskBob("Analyze this code for architecture issues, performance bottlenecks, and security risks.", codeInput);
+    setCodeInput("");
+  };
+
+  // ── GitHub connector ───────────────────────────────────────────────────────
+  const handleGithubAnalyze = async () => {
+    if (!githubUrl.trim()) return;
+    setGithubLoading(true);
+    setGithubError("");
+    setGithubInfo(null);
+    try {
+      const info = await fetchGitHubRepo(githubUrl);
+      setGithubInfo(info);
+      const analysis = await analyzeGitHubRepo(info);
+      setRepoAnalysis(analysis);
+      const userMsg: ChatMessage = {
+        id: `u-${Date.now()}`, role: "user",
+        content: `Analyze the GitHub repo: ${githubUrl}`,
+      };
+      const bobMsg: ChatMessage = {
+        id: `b-${Date.now()}`, role: "bob",
+        content: analysis.summary,
+        suggestions: analysis.hotspots,
+        impact: `${analysis.risk} Risk`,
+        category: "Architecture",
+      };
+      setChatHistory(prev => [...prev, userMsg, bobMsg]);
+      setActiveTab("explainer");
+      setShowGithub(false);
+    } catch (err) {
+      setGithubError(err instanceof Error ? err.message : "Could not fetch repo. Make sure it is public.");
+    }
+    setGithubLoading(false);
+  };
+
+  // ── Sprint planner ─────────────────────────────────────────────────────────
+  const handleSprintPlan = async () => {
+    if (!sprintInput.trim()) return;
+    setSprintLoading(true);
+    const plan = await generateSprintPlan(sprintInput);
+    setSprintPlan(plan);
+    setSprintLoading(false);
+  };
+
+  // ── Analyze repo ───────────────────────────────────────────────────────────
   const handleAnalyzeRepo = async () => {
     setRepoLoading(true);
     const result = await analyzeBobRepo();
@@ -197,6 +297,7 @@ export default function App() {
     setRepoLoading(false);
   };
 
+  // ── Workflows ──────────────────────────────────────────────────────────────
   const launchWorkflow = (label: string, icon: ReactNode) => {
     const id = Math.random().toString(36).slice(2, 9);
     setActiveWorkflows(prev => [{ id, label, progress: 0, icon }, ...prev]);
@@ -204,178 +305,113 @@ export default function App() {
       setActiveWorkflows(prev => prev.map(w => {
         if (w.id !== id) return w;
         const next = Math.min(w.progress + Math.floor(Math.random() * 18) + 5, 100);
-        if (next >= 100) {
-          clearInterval(interval);
-          workflowIntervals.current.delete(id);
-          return { ...w, progress: 100, done: true };
-        }
+        if (next >= 100) { clearInterval(interval); workflowIntervals.current.delete(id); return { ...w, progress: 100, done: true }; }
         return { ...w, progress: next };
       }));
     }, 900);
     workflowIntervals.current.set(id, interval);
   };
 
+  // ── Export report ──────────────────────────────────────────────────────────
   const handleExportReport = () => {
     const report = {
-      generatedBy: "IBM Bob via Spark.Studio",
-      timestamp:   new Date().toISOString(),
+      generatedBy: "IBM Bob via Spark.Studio", timestamp: new Date().toISOString(),
       repositoryStats: { totalFiles: 2450, complexityScore: "Medium (7.4)" },
       roi: { devTimeReclaimed: "48h/sprint", estimatedSavings: "$14,200", riskMitigation: "86%" },
       composition: REPO_DATA, complexity: COMPLEXITY_DATA, architecture: ARCHITECTURE,
       recommendations: recommendations.slice(0, 5).map(r => r.message),
       chatHistory: chatHistory.map(m => ({ role: m.role, content: m.content })),
-      repoAnalysis: repoAnalysis || null,
+      sprintPlan: sprintPlan || null, repoAnalysis: repoAnalysis || null,
+      githubInfo: githubInfo || null,
     };
     const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
     const url  = URL.createObjectURL(blob);
-    const a    = document.createElement("a");
-    a.href = url; a.download = `ibm-bob-report-${Date.now()}.json`; a.click();
+    const a    = document.createElement("a"); a.href = url; a.download = `ibm-bob-report-${Date.now()}.json`; a.click();
     URL.revokeObjectURL(url);
   };
 
-  const handleCodeAnalyze = () => {
-    if (!codeInput.trim()) return;
-    const q = "Analyze this code for architecture issues, performance bottlenecks, and security risks.";
-    setShowCodeInput(false);
-    setActiveTab("explainer");
-    handleAskBob(q, codeInput);
-  };
+  // ── Nav helper ─────────────────────────────────────────────────────────────
+  const goTab = (tab: string) => { setActiveTab(tab); setMobileMenuOpen(false); };
 
-  // ── Boot screen ─────────────────────────────────────────────────────────────
+  // ── Boot screen ────────────────────────────────────────────────────────────
   if (!booted) {
     return (
       <div className="min-h-screen bg-brand-black flex flex-col items-center justify-center gap-8 font-mono">
-        <motion.div
-          initial={{ scale: 0.8, opacity: 0 }}
-          animate={{ scale: 1,   opacity: 1 }}
-          className="flex items-center gap-4"
-        >
+        <motion.div initial={{ scale: 0.8, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="flex items-center gap-4">
           <div className="w-16 h-16 bg-brand-indigo rounded-2xl border-4 border-white flex items-center justify-center shadow-[0_0_40px_rgba(15,98,254,0.6)]">
             <span className="text-white font-black text-4xl">B</span>
           </div>
           <div>
-            <div className="text-white text-3xl font-black uppercase italic tracking-tight">
-              SPARK<span className="text-brand-pink">.</span>STUDIO
-            </div>
-            <div className="text-brand-teal text-xs font-black uppercase tracking-widest">
-              Powered by IBM Bob
-            </div>
+            <div className="text-white text-3xl font-black uppercase italic">SPARK<span className="text-brand-pink">.</span>STUDIO</div>
+            <div className="text-brand-teal text-xs font-black uppercase tracking-widest">Powered by IBM Bob</div>
           </div>
         </motion.div>
         <div className="w-80 space-y-3">
           {BOOT_STEPS.map((step, i) => (
-            <motion.div
-              key={i}
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: i < bootStep ? 1 : 0.2, x: 0 }}
-              transition={{ delay: i * 0.1 }}
-              className="flex items-center gap-3"
-            >
+            <motion.div key={i} initial={{ opacity: 0, x: -20 }} animate={{ opacity: i < bootStep ? 1 : 0.2, x: 0 }} transition={{ delay: i * 0.1 }} className="flex items-center gap-3">
               <div className={`w-2 h-2 rounded-full shrink-0 ${i < bootStep ? "bg-brand-teal" : "bg-white/20"}`} />
-              <span className={`text-xs font-bold uppercase tracking-widest ${i < bootStep ? "text-brand-teal" : "text-white/30"}`}>
-                {step}
-              </span>
+              <span className={`text-xs font-bold uppercase tracking-widest ${i < bootStep ? "text-brand-teal" : "text-white/30"}`}>{step}</span>
             </motion.div>
           ))}
         </div>
         <div className="w-80 h-1 bg-white/10 rounded-full overflow-hidden">
-          <motion.div
-            className="h-full bg-brand-teal"
-            animate={{ width: `${(bootStep / BOOT_STEPS.length) * 100}%` }}
-            transition={{ duration: 0.4 }}
-          />
+          <motion.div className="h-full bg-brand-teal" animate={{ width: `${(bootStep / BOOT_STEPS.length) * 100}%` }} transition={{ duration: 0.4 }} />
         </div>
       </div>
     );
   }
 
-  // ── Landing page ─────────────────────────────────────────────────────────────
+  // ── Landing ────────────────────────────────────────────────────────────────
   if (showLanding) {
     return (
       <div className="min-h-screen bg-brand-black text-white flex flex-col overflow-hidden relative">
-        {/* Background grid */}
-        <div className="absolute inset-0 opacity-5"
-          style={{ backgroundImage: "linear-gradient(#0F62FE 1px,transparent 1px),linear-gradient(90deg,#0F62FE 1px,transparent 1px)", backgroundSize: "40px 40px" }}
-        />
-        {/* Glow */}
+        <div className="absolute inset-0 opacity-5" style={{ backgroundImage: "linear-gradient(#0F62FE 1px,transparent 1px),linear-gradient(90deg,#0F62FE 1px,transparent 1px)", backgroundSize: "40px 40px" }} />
         <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-[600px] h-[400px] bg-brand-indigo/20 rounded-full blur-[120px]" />
-
         <nav className="relative z-10 h-20 px-8 flex items-center justify-between border-b border-white/10">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-brand-indigo rounded-xl border-2 border-white flex items-center justify-center">
-              <span className="text-white font-black text-2xl">B</span>
-            </div>
-            <span className="text-xl font-black uppercase italic">
-              SPARK<span className="text-brand-pink">.</span>STUDIO
-            </span>
+            <div className="w-10 h-10 bg-brand-indigo rounded-xl border-2 border-white flex items-center justify-center"><span className="text-white font-black text-2xl">B</span></div>
+            <span className="text-xl font-black uppercase italic">SPARK<span className="text-brand-pink">.</span>STUDIO</span>
           </div>
           <div className="flex items-center gap-4">
-            <span className="text-xs font-black text-brand-teal uppercase tracking-widest hidden sm:block">
-              IBM Bob Hackathon 2026
-            </span>
-            <motion.button
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={() => setShowLanding(false)}
+            <span className="text-xs font-black text-brand-teal uppercase tracking-widest hidden sm:block">IBM Bob Hackathon 2026</span>
+            <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} onClick={() => setShowLanding(false)}
               className="bg-brand-indigo text-white px-6 py-3 rounded-xl border-2 border-white font-black text-sm uppercase tracking-widest flex items-center gap-2"
             >
               Launch App <ArrowRight size={16} />
             </motion.button>
           </div>
         </nav>
-
-        <main className="relative z-10 flex-1 flex flex-col items-center justify-center px-6 text-center gap-12 py-20">
+        <main className="relative z-10 flex-1 flex flex-col items-center justify-center px-6 text-center gap-10 py-20">
           <motion.div initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} className="space-y-6 max-w-4xl">
             <div className="inline-flex items-center gap-2 bg-brand-teal/10 border border-brand-teal/30 px-4 py-2 rounded-full">
               <span className="w-2 h-2 bg-brand-teal rounded-full animate-pulse" />
               <span className="text-brand-teal text-xs font-black uppercase tracking-widest">Bob is online. 2,450 files indexed.</span>
             </div>
             <h1 className="text-5xl md:text-7xl font-black uppercase italic leading-none tracking-tighter">
-              Your Repo.<br />
-              <span className="text-brand-indigo">Your Rules.</span><br />
-              <span className="text-brand-pink">AI as your</span> Dev Partner.
+              Your Repo.<br /><span className="text-brand-indigo">Your Rules.</span><br /><span className="text-brand-pink">AI as your</span> Dev Partner.
             </h1>
             <p className="text-lg md:text-xl text-white/60 font-medium max-w-2xl mx-auto leading-relaxed">
               Spark.Studio uses IBM Bob to index your entire codebase, explain complex logic, identify bottlenecks, and automate the work that slows your team down.
             </p>
           </motion.div>
-
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.3 }}
-            className="flex flex-wrap gap-4 justify-center"
-          >
-            <motion.button
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={() => setShowLanding(false)}
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }} className="flex flex-wrap gap-4 justify-center">
+            <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} onClick={() => setShowLanding(false)}
               className="bg-brand-pink text-white px-10 py-5 rounded-2xl border-4 border-white font-black text-lg uppercase tracking-widest flex items-center gap-3 shadow-[8px_8px_0_white]"
             >
-              <Cpu size={24} />
-              Start with Bob
+              <Cpu size={24} /> Start with Bob
             </motion.button>
-            <motion.button
-              whileHover={{ scale: 1.05 }}
-              onClick={() => { setShowLanding(false); setActiveTab("explainer"); }}
+            <motion.button whileHover={{ scale: 1.05 }} onClick={() => { setShowLanding(false); setActiveTab("explainer"); }}
               className="bg-transparent text-white px-10 py-5 rounded-2xl border-4 border-white/30 font-black text-lg uppercase tracking-widest flex items-center gap-3 hover:border-white transition-colors"
             >
-              <MessageSquareCode size={24} />
-              Try Logic Explainer
+              <MessageSquareCode size={24} /> Try Logic Explainer
             </motion.button>
           </motion.div>
-
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.6 }}
-            className="grid grid-cols-2 md:grid-cols-4 gap-4 max-w-3xl w-full"
-          >
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.6 }} className="grid grid-cols-2 md:grid-cols-4 gap-4 max-w-3xl w-full">
             {[
-              { label: "Files Indexed",    value: "2,450",   color: "text-brand-teal"   },
-              { label: "Dev Hours Saved",  value: "+48h",    color: "text-brand-yellow" },
-              { label: "Risk Mitigation",  value: "86%",     color: "text-brand-pink"   },
-              { label: "Est. Savings",     value: "$14.2k",  color: "text-brand-indigo" },
+              { label: "Files Indexed",   value: "2,450",  color: "text-brand-teal"   },
+              { label: "Dev Hours Saved", value: "+48h",   color: "text-brand-yellow" },
+              { label: "Risk Mitigation", value: "86%",    color: "text-brand-pink"   },
+              { label: "Est. Savings",    value: "$14.2k", color: "text-brand-indigo" },
             ].map((s, i) => (
               <div key={i} className="bg-white/5 border border-white/10 rounded-2xl p-4 flex flex-col">
                 <span className={`text-3xl font-black ${s.color}`}>{s.value}</span>
@@ -384,7 +420,6 @@ export default function App() {
             ))}
           </motion.div>
         </main>
-
         <footer className="relative z-10 h-12 px-8 border-t border-white/10 flex items-center justify-between text-[10px] font-black uppercase text-white/30 tracking-widest">
           <span>IBM Bob Hackathon 2026</span>
           <span>Spark.Studio — Built for speed. Built with Bob.</span>
@@ -393,206 +428,250 @@ export default function App() {
     );
   }
 
-  // ── Main dashboard ───────────────────────────────────────────────────────────
+  // ── Dashboard ──────────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen flex flex-col bg-brand-bg text-brand-black font-sans selection:bg-brand-pink/30">
+    <div className="min-h-screen flex flex-col bg-brand-bg text-brand-black font-sans">
 
-      {/* Code Input Modal */}
+      {/* Hidden file input */}
+      <input ref={fileInputRef} type="file" accept=".ts,.tsx,.js,.jsx,.py,.go,.rs,.java,.cs,.cpp,.c,.json,.yaml,.yml,.md,.prisma,.sql" className="hidden" onChange={handleFileUpload} />
+
+      {/* Code Paste Modal */}
       <AnimatePresence>
         {showCodeInput && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
-            onClick={() => setShowCodeInput(false)}
-          >
-            <motion.div
-              initial={{ scale: 0.9, y: 20 }}
-              animate={{ scale: 1, y: 0 }}
-              exit={{ scale: 0.9, y: 20 }}
-              onClick={e => e.stopPropagation()}
-              className="bg-white dark:bg-brand-dark-card border-brutal rounded-brutal-lg p-8 w-full max-w-2xl flex flex-col gap-4 shadow-brutal-lg"
+          <Modal onClose={() => setShowCodeInput(false)} title="Paste Your Code" icon={<Upload size={24} className="text-brand-indigo" />}>
+            <p className="text-sm font-bold text-brand-black/60 dark:text-white/60">Paste any code snippet and Bob will analyze it with full architectural context.</p>
+            <textarea value={codeInput} onChange={e => setCodeInput(e.target.value)} placeholder="// Paste your code here..."
+              className="w-full h-56 bg-brand-bg dark:bg-brand-dark-bg border-2 border-brand-black dark:border-white rounded-xl p-4 font-mono text-sm resize-none focus:outline-none focus:ring-4 focus:ring-brand-indigo/20 dark:text-white" autoFocus />
+            <div className="flex gap-3">
+              <motion.button whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }} onClick={handleCodeAnalyze} disabled={!codeInput.trim()}
+                className="flex-1 bg-brand-indigo text-white py-3 rounded-xl border-2 border-brand-black dark:border-white shadow-brutal font-black uppercase text-sm flex items-center justify-center gap-2 disabled:opacity-50 hover:bg-brand-pink transition-colors"
+              >
+                <Terminal size={18} /> Analyze with Bob
+              </motion.button>
+              <button onClick={() => setCodeInput("")} className="px-4 py-3 border-2 border-brand-black dark:border-white rounded-xl font-black text-sm uppercase hover:bg-brand-bg dark:hover:bg-white/10 transition-colors dark:text-white">Clear</button>
+            </div>
+          </Modal>
+        )}
+      </AnimatePresence>
+
+      {/* GitHub Modal */}
+      <AnimatePresence>
+        {showGithub && (
+          <Modal onClose={() => { setShowGithub(false); setGithubError(""); setGithubInfo(null); }} title="GitHub Connector" icon={<Github size={24} className="text-brand-indigo" />}>
+            <p className="text-sm font-bold text-brand-black/60 dark:text-white/60">Paste any public GitHub repo URL. Bob will fetch the file tree, README, and give a real architectural assessment.</p>
+            <input value={githubUrl} onChange={e => setGithubUrl(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") handleGithubAnalyze(); }}
+              placeholder="https://github.com/owner/repo"
+              className="w-full bg-brand-bg dark:bg-brand-dark-bg border-2 border-brand-black dark:border-white rounded-xl p-4 font-mono text-sm focus:outline-none focus:ring-4 focus:ring-brand-indigo/20 dark:text-white"
+            />
+            {githubError && <p className="text-xs font-bold text-brand-pink bg-brand-pink/10 px-3 py-2 rounded-lg border border-brand-pink/30">{githubError}</p>}
+            {githubInfo && (
+              <div className="bg-brand-bg dark:bg-brand-dark-bg rounded-xl border-2 border-brand-black/20 dark:border-white/20 p-4 space-y-2">
+                <p className="font-black text-brand-indigo dark:text-brand-teal">{githubInfo.name}</p>
+                <p className="text-xs font-bold dark:text-white/70">{githubInfo.description}</p>
+                <div className="flex gap-3 text-[10px] font-black uppercase">
+                  <span className="text-brand-teal">{githubInfo.language}</span>
+                  <span className="text-brand-yellow">{githubInfo.stars} stars</span>
+                  <span className="text-brand-pink">{githubInfo.files.length} files detected</span>
+                </div>
+              </div>
+            )}
+            <motion.button whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }} onClick={handleGithubAnalyze} disabled={githubLoading || !githubUrl.trim()}
+              className="w-full bg-brand-indigo text-white py-3 rounded-xl border-2 border-brand-black dark:border-white shadow-brutal font-black uppercase text-sm flex items-center justify-center gap-2 disabled:opacity-50 hover:bg-brand-pink transition-colors"
             >
-              <div className="flex items-center justify-between">
-                <h3 className="text-2xl font-black italic flex items-center gap-2 dark:text-white">
-                  <Upload size={24} className="text-brand-indigo" />
-                  Paste Your Code
-                </h3>
-                <button onClick={() => setShowCodeInput(false)} className="p-2 hover:bg-brand-bg dark:hover:bg-white/10 rounded-lg transition-colors">
-                  <X size={20} className="dark:text-white" />
-                </button>
-              </div>
-              <p className="text-sm font-bold text-brand-black/60 dark:text-white/60">
-                Paste any code snippet and Bob will analyze it with full architectural context.
-              </p>
-              <textarea
-                value={codeInput}
-                onChange={e => setCodeInput(e.target.value)}
-                placeholder="// Paste your code here..."
-                className="w-full h-64 bg-brand-bg dark:bg-brand-dark-bg border-2 border-brand-black dark:border-white rounded-xl p-4 font-mono text-sm resize-none focus:outline-none focus:ring-4 focus:ring-brand-indigo/20 dark:text-white"
-                autoFocus
-              />
-              <div className="flex gap-3">
-                <motion.button
-                  whileHover={{ scale: 1.03 }}
-                  whileTap={{ scale: 0.97 }}
-                  onClick={handleCodeAnalyze}
-                  disabled={!codeInput.trim()}
-                  className="flex-1 bg-brand-indigo text-white py-3 rounded-xl border-2 border-brand-black dark:border-white shadow-brutal font-black uppercase text-sm flex items-center justify-center gap-2 disabled:opacity-50 hover:bg-brand-pink transition-colors"
+              {githubLoading ? <><Loader2 size={18} className="animate-spin" /> Fetching repo...</> : <><Github size={18} /> Analyze with Bob</>}
+            </motion.button>
+          </Modal>
+        )}
+      </AnimatePresence>
+
+      {/* Sprint Planner Modal */}
+      <AnimatePresence>
+        {showSprint && (
+          <Modal onClose={() => setShowSprint(false)} title="Bob's Sprint Planner" icon={<ListTodo size={24} className="text-brand-pink" />} wide>
+            <p className="text-sm font-bold text-brand-black/60 dark:text-white/60">Paste your backlog, issues, or TODO list. Bob will prioritize by ROI, risk, and effort and generate an optimized sprint plan.</p>
+            {!sprintPlan ? (
+              <>
+                <textarea value={sprintInput} onChange={e => setSprintInput(e.target.value)}
+                  placeholder={"- Fix auth token expiry bug\n- Add unit tests for API client\n- Refactor dataMapper.ts\n- Update README\n- Set up GitHub Actions CI/CD"}
+                  className="w-full h-48 bg-brand-bg dark:bg-brand-dark-bg border-2 border-brand-black dark:border-white rounded-xl p-4 font-mono text-sm resize-none focus:outline-none focus:ring-4 focus:ring-brand-pink/20 dark:text-white"
+                />
+                <motion.button whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }} onClick={handleSprintPlan} disabled={sprintLoading || !sprintInput.trim()}
+                  className="w-full bg-brand-pink text-white py-3 rounded-xl border-2 border-brand-black dark:border-white shadow-brutal font-black uppercase text-sm flex items-center justify-center gap-2 disabled:opacity-50"
                 >
-                  <Terminal size={18} />
-                  Analyze with Bob
+                  {sprintLoading ? <><Loader2 size={18} className="animate-spin" /> Bob is planning your sprint...</> : <><Wand2 size={18} /> Generate Sprint Plan</>}
                 </motion.button>
-                <button
-                  onClick={() => setCodeInput("")}
-                  className="px-4 py-3 border-2 border-brand-black dark:border-white rounded-xl font-black text-sm uppercase hover:bg-brand-bg dark:hover:bg-white/10 transition-colors dark:text-white"
+              </>
+            ) : (
+              <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-1">
+                <div className="bg-brand-indigo text-white p-4 rounded-xl">
+                  <p className="text-[10px] font-black uppercase text-white/60 mb-1">Sprint Goal</p>
+                  <p className="font-black text-sm">{sprintPlan.sprintGoal}</p>
+                </div>
+                <div className="space-y-2">
+                  {sprintPlan.tasks.map((task, i) => (
+                    <div key={i} className="bg-brand-bg dark:bg-brand-dark-bg border-2 border-brand-black/20 dark:border-white/20 rounded-xl p-4 flex gap-3 items-start">
+                      <div className={`w-2 h-2 rounded-full shrink-0 mt-1.5 ${PRIORITY_COLORS[task.priority] || "bg-brand-teal"}`} />
+                      <div className="flex-1">
+                        <div className="flex items-start justify-between gap-2 flex-wrap">
+                          <p className="font-black text-sm dark:text-white">{task.task}</p>
+                          <div className="flex gap-1.5 shrink-0">
+                            <span className="text-[8px] font-black uppercase bg-brand-indigo/10 text-brand-indigo dark:text-brand-teal px-2 py-0.5 rounded">{task.category}</span>
+                            <span className={`text-[8px] font-black uppercase ${EFFORT_COLORS[task.effort] || "text-brand-teal"}`}>{task.effort}</span>
+                          </div>
+                        </div>
+                        <p className="text-[11px] font-bold text-brand-black/60 dark:text-white/50 mt-1">{task.roi}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="bg-brand-teal/10 border border-brand-teal/30 rounded-xl p-3">
+                    <p className="text-[10px] font-black text-brand-teal uppercase">Est. Hours</p>
+                    <p className="text-2xl font-black text-brand-teal">{sprintPlan.totalEstimatedHours}h</p>
+                  </div>
+                  <div className="bg-brand-pink/10 border border-brand-pink/30 rounded-xl p-3">
+                    <p className="text-[10px] font-black text-brand-pink uppercase">Sprint Impact</p>
+                    <p className="text-xs font-bold text-brand-pink leading-tight mt-1">{sprintPlan.expectedImpact}</p>
+                  </div>
+                </div>
+                <button onClick={() => { setSprintPlan(null); setSprintInput(""); }}
+                  className="w-full py-2.5 border-2 border-brand-black dark:border-white rounded-xl font-black text-xs uppercase dark:text-white hover:bg-brand-bg dark:hover:bg-white/10 transition-colors"
                 >
-                  Clear
+                  Plan Another Sprint
                 </button>
               </div>
-            </motion.div>
-          </motion.div>
+            )}
+          </Modal>
         )}
       </AnimatePresence>
 
       {/* Mobile Menu */}
       <AnimatePresence>
         {mobileMenuOpen && (
-          <motion.div
-            initial={{ opacity: 0, x: "100%" }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: "100%" }}
-            transition={{ type: "spring", damping: 25 }}
-            className="fixed inset-y-0 right-0 z-[90] w-72 bg-white dark:bg-brand-dark-bg border-l-4 border-brand-black dark:border-white flex flex-col p-8 gap-6 shadow-2xl"
+          <motion.div initial={{ opacity: 0, x: "100%" }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: "100%" }} transition={{ type: "spring", damping: 25 }}
+            className="fixed inset-y-0 right-0 z-[90] w-72 bg-white dark:bg-brand-dark-bg border-l-4 border-brand-black dark:border-white flex flex-col p-8 gap-5 shadow-2xl"
           >
             <div className="flex items-center justify-between">
               <span className="font-black text-xl uppercase italic dark:text-white">Menu</span>
-              <button onClick={() => setMobileMenuOpen(false)}>
-                <X size={24} className="dark:text-white" />
-              </button>
+              <button onClick={() => setMobileMenuOpen(false)}><X size={24} className="dark:text-white" /></button>
             </div>
-            <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-2">
               {["intelligence", "automation", "explainer"].map(tab => (
-                <button key={tab} onClick={() => { setActiveTab(tab); setMobileMenuOpen(false); }}
-                  className={`text-left px-4 py-3 rounded-xl font-black uppercase text-sm border-2 transition-colors ${
-                    activeTab === tab
-                      ? "bg-brand-indigo text-white border-brand-indigo"
-                      : "border-brand-black dark:border-white dark:text-white hover:bg-brand-bg dark:hover:bg-white/10"
-                  }`}
+                <button key={tab} onClick={() => goTab(tab)}
+                  className={`text-left px-4 py-3 rounded-xl font-black uppercase text-sm border-2 transition-colors ${activeTab === tab ? "bg-brand-indigo text-white border-brand-indigo" : "border-brand-black dark:border-white dark:text-white hover:bg-brand-bg dark:hover:bg-white/10"}`}
                 >
                   {tab === "explainer" ? "Logic Explainer" : tab}
                 </button>
               ))}
             </div>
-            <div className="border-t border-brand-black/10 dark:border-white/10 pt-4 flex flex-col gap-3">
-              <button onClick={() => { setShowCodeInput(true); setMobileMenuOpen(false); }}
-                className="flex items-center gap-2 px-4 py-3 rounded-xl border-2 border-brand-black dark:border-white font-black uppercase text-sm dark:text-white hover:bg-brand-bg dark:hover:bg-white/10 transition-colors"
-              >
-                <Upload size={16} /> Paste Code
+            <div className="border-t border-brand-black/10 dark:border-white/10 pt-4 flex flex-col gap-2">
+              <button onClick={() => { setShowCodeInput(true); setMobileMenuOpen(false); }} className="flex items-center gap-2 px-4 py-3 rounded-xl border-2 border-brand-black dark:border-white font-black uppercase text-sm dark:text-white hover:bg-brand-bg dark:hover:bg-white/10 transition-colors"><Upload size={16} /> Paste Code</button>
+              <button onClick={() => { fileInputRef.current?.click(); setMobileMenuOpen(false); }} className="flex items-center gap-2 px-4 py-3 rounded-xl border-2 border-brand-black dark:border-white font-black uppercase text-sm dark:text-white hover:bg-brand-bg dark:hover:bg-white/10 transition-colors"><FolderOpen size={16} /> Upload File</button>
+              <button onClick={() => { setShowGithub(true); setMobileMenuOpen(false); }} className="flex items-center gap-2 px-4 py-3 rounded-xl border-2 border-brand-black dark:border-white font-black uppercase text-sm dark:text-white hover:bg-brand-bg dark:hover:bg-white/10 transition-colors"><Github size={16} /> GitHub Repo</button>
+              <button onClick={() => { setShowSprint(true); setMobileMenuOpen(false); }} className="flex items-center gap-2 px-4 py-3 rounded-xl bg-brand-pink text-white border-2 border-brand-black dark:border-white font-black uppercase text-sm"><ListTodo size={16} /> Sprint Planner</button>
+              <button onClick={handleAnalyzeRepo} disabled={repoLoading} className="flex items-center gap-2 px-4 py-3 rounded-xl bg-brand-indigo text-white border-2 border-brand-black dark:border-white font-black uppercase text-sm disabled:opacity-60">
+                {repoLoading ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />} {repoLoading ? "Analyzing..." : "Analyze Repo"}
               </button>
-              <button onClick={handleAnalyzeRepo} disabled={repoLoading}
-                className="flex items-center gap-2 px-4 py-3 rounded-xl bg-brand-indigo text-white border-2 border-brand-black dark:border-white font-black uppercase text-sm disabled:opacity-60"
-              >
-                {repoLoading ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
-                {repoLoading ? "Analyzing..." : "Analyze Repo"}
-              </button>
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between mt-2">
                 <span className="font-black text-sm uppercase dark:text-white">Dark Mode</span>
-                <button onClick={() => setDarkMode(!darkMode)}
-                  className="w-10 h-10 bg-brand-bg dark:bg-white/10 border-2 border-brand-black dark:border-white rounded-xl flex items-center justify-center"
-                >
+                <button onClick={() => setDarkMode(!darkMode)} className="w-10 h-10 bg-brand-bg dark:bg-white/10 border-2 border-brand-black dark:border-white rounded-xl flex items-center justify-center">
                   {darkMode ? <Sun size={18} className="text-brand-yellow" /> : <Moon size={18} className="text-brand-indigo" />}
                 </button>
               </div>
             </div>
-            <button onClick={() => setShowLanding(true)} className="mt-auto text-xs font-black uppercase text-brand-indigo/60 dark:text-brand-teal hover:text-brand-pink transition-colors flex items-center gap-1">
-              <ChevronRight size={14} /> Back to landing
-            </button>
+            <button onClick={() => setShowLanding(true)} className="mt-auto text-xs font-black uppercase text-brand-indigo/60 dark:text-brand-teal hover:text-brand-pink transition-colors flex items-center gap-1"><ChevronRight size={14} /> Back to landing</button>
           </motion.div>
         )}
       </AnimatePresence>
 
       {/* Nav */}
-      <nav className="h-20 px-6 md:px-10 flex items-center justify-between border-b-4 border-brand-black/10 bg-white dark:bg-brand-dark-bg sticky top-0 z-50">
+      <nav className="h-20 px-4 md:px-10 flex items-center justify-between border-b-4 border-brand-black/10 bg-white dark:bg-brand-dark-bg sticky top-0 z-50">
         <button onClick={() => setShowLanding(true)} className="flex items-center gap-3">
-          <motion.div initial={{ rotate: -6 }} whileHover={{ rotate: 0 }}
-            className="w-10 h-10 bg-brand-indigo rounded-xl flex items-center justify-center border-2 border-brand-black dark:border-white shadow-brutal"
-          >
+          <motion.div initial={{ rotate: -6 }} whileHover={{ rotate: 0 }} className="w-10 h-10 bg-brand-indigo rounded-xl flex items-center justify-center border-2 border-brand-black dark:border-white shadow-brutal">
             <span className="text-white font-black text-2xl">B</span>
           </motion.div>
           <div className="flex flex-col">
-            <span className="text-xl md:text-2xl font-black tracking-tight uppercase italic leading-none dark:text-white">
-              SPARK<span className="text-brand-pink">.</span>STUDIO
-            </span>
-            <span className="text-[10px] font-black text-brand-indigo dark:text-brand-teal uppercase tracking-widest mt-0.5">
-              Powered by IBM Bob
-            </span>
+            <span className="text-xl font-black tracking-tight uppercase italic leading-none dark:text-white">SPARK<span className="text-brand-pink">.</span>STUDIO</span>
+            <span className="text-[10px] font-black text-brand-indigo dark:text-brand-teal uppercase tracking-widest">Powered by IBM Bob</span>
           </div>
         </button>
 
-        {/* Desktop nav */}
-        <div className="hidden lg:flex items-center gap-4 font-bold text-sm uppercase tracking-widest">
+        <div className="hidden lg:flex items-center gap-3 font-bold text-sm uppercase tracking-widest">
           {["intelligence", "automation", "explainer"].map(tab => (
-            <button key={tab} onClick={() => setActiveTab(tab)}
-              className={`capitalize transition-opacity ${activeTab === tab ? "text-brand-pink" : "opacity-40 dark:text-white hover:opacity-100"}`}
-            >
+            <button key={tab} onClick={() => goTab(tab)} className={`capitalize transition-opacity ${activeTab === tab ? "text-brand-pink" : "opacity-40 dark:text-white hover:opacity-100"}`}>
               {tab === "explainer" ? "Logic Explainer" : tab}
             </button>
           ))}
-          <div className="flex items-center gap-3 bg-brand-pink/5 dark:bg-brand-indigo/10 px-4 py-2 rounded-full border border-brand-pink/20">
+          <div className="flex items-center gap-2 bg-brand-pink/5 dark:bg-brand-indigo/10 px-3 py-2 rounded-full border border-brand-pink/20">
             <span className="w-1.5 h-1.5 bg-brand-teal rounded-full animate-pulse" />
-            <span className="text-[10px] font-black uppercase tracking-widest text-brand-indigo dark:text-brand-teal">Context Active</span>
+            <span className="text-[10px] font-black uppercase text-brand-indigo dark:text-brand-teal">Context Active</span>
             <div className="w-px h-4 bg-brand-indigo/20" />
             <span className="text-[10px] font-black uppercase text-brand-black/40 dark:text-white/40">2,450 Nodes</span>
           </div>
-          <button onClick={() => setShowCodeInput(true)}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-xl border-2 border-brand-black dark:border-white shadow-brutal font-black text-xs uppercase hover:bg-brand-indigo hover:text-white dark:text-white transition-colors"
+          {/* Action buttons */}
+          <button onClick={() => fileInputRef.current?.click()} disabled={uploadLoading}
+            className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl border-2 border-brand-black dark:border-white shadow-brutal font-black text-xs uppercase hover:bg-brand-teal hover:text-brand-black dark:text-white transition-colors disabled:opacity-60"
           >
-            <Upload size={16} /> Paste Code
+            {uploadLoading ? <Loader2 size={14} className="animate-spin" /> : <FolderOpen size={14} />} {uploadLoading ? "Reading..." : "Upload File"}
           </button>
-          <button onClick={() => setDarkMode(!darkMode)}
-            className="w-10 h-10 bg-white dark:bg-brand-dark-card border-2 border-brand-black dark:border-white rounded-xl shadow-brutal flex items-center justify-center hover-brutal"
-          >
+          <button onClick={() => setShowCodeInput(true)} className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl border-2 border-brand-black dark:border-white shadow-brutal font-black text-xs uppercase hover:bg-brand-indigo hover:text-white dark:text-white transition-colors">
+            <Upload size={14} /> Paste Code
+          </button>
+          <button onClick={() => setShowGithub(true)} className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl border-2 border-brand-black dark:border-white shadow-brutal font-black text-xs uppercase hover:bg-brand-indigo hover:text-white dark:text-white transition-colors">
+            <Github size={14} /> GitHub
+          </button>
+          <button onClick={() => setShowSprint(true)} className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl bg-brand-pink text-white border-2 border-brand-black dark:border-white shadow-brutal font-black text-xs uppercase hover:bg-brand-indigo transition-colors">
+            <ListTodo size={14} /> Sprint
+          </button>
+          <button onClick={() => setDarkMode(!darkMode)} className="w-10 h-10 bg-white dark:bg-brand-dark-card border-2 border-brand-black dark:border-white rounded-xl shadow-brutal flex items-center justify-center">
             {darkMode ? <Sun size={18} className="text-brand-yellow" /> : <Moon size={18} className="text-brand-indigo" />}
           </button>
-          <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
-            onClick={handleAnalyzeRepo} disabled={repoLoading}
-            className="bg-brand-indigo text-white px-6 py-3 rounded-xl border-2 border-brand-black dark:border-white shadow-brutal hover:shadow-none translate-y-[-2px] hover:translate-y-0 transition-all flex items-center gap-2 disabled:opacity-60"
+          <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} onClick={handleAnalyzeRepo} disabled={repoLoading}
+            className="bg-brand-indigo text-white px-5 py-3 rounded-xl border-2 border-brand-black dark:border-white shadow-brutal hover:shadow-none translate-y-[-2px] hover:translate-y-0 transition-all flex items-center gap-2 disabled:opacity-60"
           >
             {repoLoading ? <Loader2 size={18} className="animate-spin" /> : <Plus size={18} />}
             <span>{repoLoading ? "Analyzing..." : "Analyze Repo"}</span>
           </motion.button>
         </div>
 
-        {/* Mobile hamburger */}
-        <button onClick={() => setMobileMenuOpen(true)} className="lg:hidden p-2 border-2 border-brand-black dark:border-white rounded-xl dark:text-white">
-          <Menu size={24} />
-        </button>
+        <button onClick={() => setMobileMenuOpen(true)} className="lg:hidden p-2 border-2 border-brand-black dark:border-white rounded-xl dark:text-white"><Menu size={24} /></button>
       </nav>
 
       <main className="flex-1 p-4 md:p-10 grid grid-cols-1 lg:grid-cols-12 gap-6 md:gap-8 max-w-7xl mx-auto w-full">
-        {/* Left Column */}
         <div className="lg:col-span-8 flex flex-col gap-6 md:gap-8">
+
           {/* Hero */}
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
             className="bg-brand-teal dark:bg-brand-indigo p-6 md:p-12 rounded-brutal-lg border-brutal shadow-brutal-lg relative overflow-hidden group"
           >
             <div className="absolute top-0 right-0 w-48 h-48 bg-white/20 rounded-full -mr-24 -mt-24 group-hover:scale-125 transition-transform duration-700" />
-            <div className="bg-brand-black text-white px-4 py-1.5 rounded-full text-xs font-black uppercase tracking-widest inline-flex items-center gap-2 mb-6">
-              <Cpu size={14} className="text-brand-teal animate-pulse" />
-              Dev Partner Online
+            <div className="bg-brand-black text-white px-4 py-1.5 rounded-full text-xs font-black uppercase tracking-widest inline-flex items-center gap-2 mb-4">
+              <Cpu size={14} className="text-brand-teal animate-pulse" /> Dev Partner Online
             </div>
-            <h1 className="text-3xl md:text-5xl font-black leading-tight text-brand-black dark:text-white mb-6">
-              "Bob, help me understand
-              <br />
-              <span className="text-brand-indigo dark:text-brand-yellow italic underline decoration-4 underline-offset-8 decoration-brand-yellow">
-                this repository.
-              </span>"
+            <h1 className="text-3xl md:text-5xl font-black leading-tight text-brand-black dark:text-white mb-4">
+              "Bob, help me understand<br />
+              <span className="text-brand-indigo dark:text-brand-yellow italic underline decoration-4 underline-offset-8 decoration-brand-yellow">this repository.</span>"
             </h1>
-            <p className="text-base md:text-xl font-medium text-brand-black/80 dark:text-white/90 max-w-md mb-6">
+            <p className="text-base md:text-xl font-medium text-brand-black/80 dark:text-white/90 max-w-md mb-4">
               Your AI partner has indexed <strong>2,450 files</strong>. Ready to automate refactors, clarify logic, and generate deep docs.
             </p>
+
+            {/* Quick action chips */}
+            <div className="flex flex-wrap gap-2 mb-4">
+              {[
+                { label: "Upload a file", icon: <FolderOpen size={12} />, action: () => fileInputRef.current?.click() },
+                { label: "Connect GitHub repo", icon: <Github size={12} />, action: () => setShowGithub(true) },
+                { label: "Plan my sprint", icon: <ListTodo size={12} />, action: () => setShowSprint(true) },
+              ].map((chip, i) => (
+                <button key={i} onClick={chip.action}
+                  className="flex items-center gap-1.5 bg-white/20 hover:bg-white/30 text-brand-black dark:text-white border border-white/30 px-3 py-1.5 rounded-full text-[11px] font-black uppercase transition-colors"
+                >
+                  {chip.icon} {chip.label}
+                </button>
+              ))}
+            </div>
+
             <div className="flex flex-wrap gap-3">
               <div className="bg-white/10 backdrop-blur-sm px-4 md:px-6 py-3 md:py-4 rounded-brutal border-2 border-white/20 flex flex-col">
                 <span className="text-[10px] font-black text-white/60 uppercase">Context Depth</span>
@@ -602,81 +681,70 @@ export default function App() {
                 <span className="text-[10px] font-black text-white/60 uppercase">Complexity Score</span>
                 <span className="text-xl md:text-2xl font-black text-white">Medium (7.4)</span>
               </div>
+              {githubInfo && (
+                <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}
+                  className="bg-white/10 backdrop-blur-sm px-4 md:px-6 py-3 md:py-4 rounded-brutal border-2 border-white/20 flex flex-col"
+                >
+                  <span className="text-[10px] font-black text-white/60 uppercase">Connected Repo</span>
+                  <span className="text-xl font-black text-white">{githubInfo.name}</span>
+                </motion.div>
+              )}
               {repoAnalysis && (
                 <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}
                   className={`bg-white/10 backdrop-blur-sm px-4 md:px-6 py-3 md:py-4 rounded-brutal border-2 border-white/20 flex flex-col ${repoAnalysis.risk === "High" ? "border-brand-pink/60" : ""}`}
                 >
                   <span className="text-[10px] font-black text-white/60 uppercase">Bob's Risk Assessment</span>
-                  <span className={`text-xl md:text-2xl font-black ${repoAnalysis.risk === "High" ? "text-brand-pink" : "text-white"}`}>
-                    {repoAnalysis.risk} Risk
-                  </span>
+                  <span className={`text-xl md:text-2xl font-black ${repoAnalysis.risk === "High" ? "text-brand-pink" : "text-white"}`}>{repoAnalysis.risk} Risk</span>
                 </motion.div>
               )}
             </div>
             {repoAnalysis && (
-              <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
-                className="mt-6 p-4 bg-white/10 rounded-brutal border border-white/20"
-              >
+              <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="mt-4 p-4 bg-white/10 rounded-brutal border border-white/20">
                 <p className="text-sm font-bold text-white/90 leading-relaxed">
-                  <span className="text-brand-yellow font-black">Bob says: </span>
-                  {repoAnalysis.summary}
+                  <span className="text-brand-yellow font-black">Bob says: </span>{repoAnalysis.summary}
                 </p>
-                <p className="text-xs font-black text-white/60 mt-2 uppercase tracking-widest">
-                  Priority this sprint: {repoAnalysis.recommendation}
-                </p>
+                <p className="text-xs font-black text-white/60 mt-1 uppercase tracking-widest">Priority this sprint: {repoAnalysis.recommendation}</p>
               </motion.div>
             )}
           </motion.div>
 
-          {/* Tabs */}
+          {/* Tab content */}
           <AnimatePresence mode="wait">
             {activeTab === "intelligence" && (
-              <motion.div key="intelligence" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-6 md:space-y-8">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
-                  <FeatureCard icon={<BookOpen size={24} />} title="Identity and Flow" subtitle="Repo Intelligence"
-                    description="Bob maps how authentication flows through your middleware and services." color="bg-brand-yellow" />
-                  <FeatureCard icon={<Layers size={24} />} title="Context Graph" subtitle="Service Mapping"
-                    description="Bob identified 12 interconnected microservices and 4 critical data paths." color="bg-brand-teal" />
+              <motion.div key="intelligence" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <FeatureCard icon={<BookOpen size={24} />} title="Identity and Flow" subtitle="Repo Intelligence" description="Bob maps how authentication flows through your middleware and services." color="bg-brand-yellow" />
+                  <FeatureCard icon={<Layers size={24} />} title="Context Graph" subtitle="Service Mapping" description="Bob identified 12 interconnected microservices and 4 critical data paths." color="bg-brand-teal" />
                 </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
-                  {/* Pie chart */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="bg-white dark:bg-brand-dark-card border-brutal rounded-brutal-lg p-6 shadow-brutal flex flex-col gap-4">
-                    <h3 className="text-xl font-black italic flex items-center gap-2 dark:text-white">
-                      <PieChartIcon size={20} className="text-brand-pink" /> Repo Composition
-                    </h3>
+                    <h3 className="text-xl font-black italic flex items-center gap-2 dark:text-white"><PieChartIcon size={20} className="text-brand-pink" /> Repo Composition</h3>
                     <div className="h-44 w-full">
                       <ResponsiveContainer width="100%" height="100%">
                         <PieChart>
                           <Pie data={REPO_DATA} innerRadius={36} outerRadius={56} paddingAngle={5} dataKey="value" stroke="#1A1A1A" strokeWidth={2}>
                             {REPO_DATA.map((e, i) => <Cell key={i} fill={e.color} />)}
                           </Pie>
-                          <Tooltip contentStyle={{ backgroundColor:"#1A1A1A", border:"none", borderRadius:"8px", color:"white", fontWeight:"900", fontSize:"10px" }} />
+                          <Tooltip contentStyle={{ backgroundColor: "#1A1A1A", border: "none", borderRadius: "8px", color: "white", fontWeight: "900", fontSize: "10px" }} />
                         </PieChart>
                       </ResponsiveContainer>
                     </div>
                     <div className="grid grid-cols-2 gap-2">
                       {REPO_DATA.map(item => (
                         <div key={item.name} className="flex items-center gap-2 text-[10px] font-black uppercase dark:text-white/80">
-                          <div className="w-2 h-2 rounded-full" style={{ backgroundColor: item.color }} />
-                          {item.name}: {item.value}%
+                          <div className="w-2 h-2 rounded-full" style={{ backgroundColor: item.color }} /> {item.name}: {item.value}%
                         </div>
                       ))}
                     </div>
                   </div>
-                  {/* ROI */}
                   <div className="bg-white dark:bg-brand-dark-card border-brutal rounded-brutal-lg p-6 shadow-brutal flex flex-col gap-4">
-                    <h3 className="text-xl font-black italic flex items-center gap-2 dark:text-white">
-                      <Zap size={20} className="text-brand-yellow" /> Strategic ROI
-                    </h3>
-                    <button onClick={handleExportReport}
-                      className="p-2 bg-brand-indigo text-white rounded-lg border border-brand-black dark:border-white shadow-sm hover:scale-105 active:scale-95 transition-all flex items-center justify-center gap-2 group"
-                    >
-                      <Download size={14} className="group-hover:animate-bounce" />
-                      <span className="text-[10px] font-black uppercase">Export Report</span>
+                    <h3 className="text-xl font-black italic flex items-center gap-2 dark:text-white"><Zap size={20} className="text-brand-yellow" /> Strategic ROI</h3>
+                    <button onClick={handleExportReport} className="p-2 bg-brand-indigo text-white rounded-lg border border-brand-black dark:border-white flex items-center justify-center gap-2 hover:scale-105 transition-transform group">
+                      <Download size={14} className="group-hover:animate-bounce" /><span className="text-[10px] font-black uppercase">Export Full Report</span>
                     </button>
                     <div className="grid grid-cols-2 gap-3">
                       <div className="bg-brand-indigo/5 dark:bg-brand-indigo/20 p-4 rounded-xl border border-brand-indigo/20">
-                        <p className="text-[10px] font-black uppercase text-brand-indigo dark:text-brand-teal opacity-60">Estimated Savings</p>
+                        <p className="text-[10px] font-black uppercase text-brand-indigo dark:text-brand-teal opacity-60">Est. Savings</p>
                         <p className="text-2xl font-black text-brand-indigo dark:text-brand-teal">$14.2k</p>
                       </div>
                       <div className="bg-brand-pink/5 dark:bg-brand-pink/20 p-4 rounded-xl border border-brand-pink/20">
@@ -684,37 +752,29 @@ export default function App() {
                         <p className="text-2xl font-black text-brand-pink">86%</p>
                       </div>
                     </div>
-                    <div className="text-center pt-1">
+                    <div className="text-center">
                       <div className="text-4xl font-black text-brand-indigo dark:text-white">+48h</div>
                       <p className="text-[10px] font-black uppercase text-brand-indigo/60 dark:text-brand-teal/60 tracking-widest">Dev Time Reclaimed / Sprint</p>
                     </div>
                   </div>
                 </div>
-                {/* Complexity */}
                 <div className="bg-white dark:bg-brand-dark-card border-brutal rounded-brutal-lg p-6 shadow-brutal flex flex-col gap-4">
-                  <h3 className="text-xl font-black italic flex items-center gap-2 dark:text-white">
-                    <TrendingUp size={20} className="text-brand-indigo" /> Module Complexity
-                  </h3>
+                  <h3 className="text-xl font-black italic flex items-center gap-2 dark:text-white"><TrendingUp size={20} className="text-brand-indigo" /> Module Complexity</h3>
                   <div className="h-40 w-full">
                     <ResponsiveContainer width="100%" height="100%">
                       <BarChart data={COMPLEXITY_DATA} barSize={28}>
                         <XAxis dataKey="module" tick={{ fontSize: 10, fontWeight: 900, fill: "#888" }} axisLine={false} tickLine={false} />
                         <YAxis tick={{ fontSize: 10, fill: "#888" }} axisLine={false} tickLine={false} domain={[0, 100]} />
-                        <Tooltip contentStyle={{ backgroundColor:"#1A1A1A", border:"none", borderRadius:"8px", color:"white", fontWeight:"900", fontSize:"10px" }} />
-                        <Bar dataKey="score" radius={[6,6,0,0]}>
-                          {COMPLEXITY_DATA.map((e, i) => (
-                            <Cell key={i} fill={e.score >= 70 ? "#D12771" : e.score >= 50 ? "#0F62FE" : "#11D3BC"} />
-                          ))}
+                        <Tooltip contentStyle={{ backgroundColor: "#1A1A1A", border: "none", borderRadius: "8px", color: "white", fontWeight: "900", fontSize: "10px" }} />
+                        <Bar dataKey="score" radius={[6, 6, 0, 0]}>
+                          {COMPLEXITY_DATA.map((e, i) => <Cell key={i} fill={e.score >= 70 ? "#D12771" : e.score >= 50 ? "#0F62FE" : "#11D3BC"} />)}
                         </Bar>
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
                 </div>
-                {/* Architecture */}
                 <div className="bg-brand-indigo p-6 md:p-8 rounded-brutal-lg border-brutal shadow-brutal text-white">
-                  <h3 className="text-2xl font-black italic mb-6 flex items-center gap-3">
-                    <ShieldCheck size={28} /> Architectural Discovery
-                  </h3>
+                  <h3 className="text-2xl font-black italic mb-6 flex items-center gap-3"><ShieldCheck size={28} /> Architectural Discovery</h3>
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                     {ARCHITECTURE.map((item, i) => (
                       <div key={i} className="p-4 bg-white/10 rounded-brutal border border-white/20">
@@ -727,27 +787,19 @@ export default function App() {
                     ))}
                   </div>
                 </div>
-                {/* Repo explorer */}
                 <div className="bg-white dark:bg-brand-dark-card border-brutal rounded-brutal-lg p-6 md:p-8 shadow-brutal flex flex-col gap-6">
                   <div className="flex items-center justify-between flex-wrap gap-2">
-                    <h3 className="text-2xl font-black italic flex items-center gap-3 dark:text-white">
-                      <FileCode2 className="text-brand-indigo" size={28} /> Repo Consciousness
-                    </h3>
+                    <h3 className="text-2xl font-black italic flex items-center gap-3 dark:text-white"><FileCode2 className="text-brand-indigo" size={28} /> Repo Consciousness</h3>
                     <span className="text-[10px] font-black text-brand-indigo/60 dark:text-brand-teal uppercase">Click a file for deep focus</span>
                   </div>
-                  <div className="grid grid-cols-3 md:grid-cols-5 gap-3 md:gap-4">
+                  <div className="grid grid-cols-3 md:grid-cols-5 gap-3">
                     {FILES.map(file => (
-                      <motion.button key={file.name} whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
-                        onClick={() => selectFile(file.name)}
-                        className={`p-3 md:p-4 rounded-xl border-2 border-brand-black dark:border-white shadow-sm flex flex-col items-center gap-2 transition-all ${
-                          selectedFile === file.name ? "bg-brand-indigo text-white" : "bg-white dark:bg-brand-dark-bg hover:bg-brand-bg dark:hover:bg-white/5"
-                        }`}
+                      <motion.button key={file.name} whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} onClick={() => selectFile(file.name)}
+                        className={`p-3 md:p-4 rounded-xl border-2 border-brand-black dark:border-white shadow-sm flex flex-col items-center gap-2 transition-all ${selectedFile === file.name ? "bg-brand-indigo text-white" : "bg-white dark:bg-brand-dark-bg hover:bg-brand-bg dark:hover:bg-white/5"}`}
                       >
                         <FileCode2 size={20} className={selectedFile === file.name ? "text-white" : "text-brand-indigo"} />
                         <span className={`text-[9px] font-black uppercase truncate w-full text-center ${selectedFile === file.name ? "text-white" : "dark:text-white"}`}>{file.name}</span>
-                        <span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded-full border border-current ${file.complexity === "High" ? "border-brand-pink text-brand-pink" : "border-brand-teal text-brand-teal"}`}>
-                          {file.complexity}
-                        </span>
+                        <span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded-full border border-current ${file.complexity === "High" ? "border-brand-pink text-brand-pink" : "border-brand-teal text-brand-teal"}`}>{file.complexity}</span>
                       </motion.button>
                     ))}
                   </div>
@@ -756,27 +808,21 @@ export default function App() {
             )}
 
             {activeTab === "automation" && (
-              <motion.div key="automation" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-6 md:space-y-8">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
-                  <FeatureCard icon={<Zap size={24} />} title="Test Generator" subtitle="Contextual Automation"
-                    description="Instantly generate Jest/Vitest tests for the 14 uncovered modules found." color="bg-brand-pink" darkOnHover />
-                  <FeatureCard icon={<Sparkles size={24} />} title="Multi-step Work" subtitle="Complex Pipelines"
-                    description="Deploy a staging environment with mock data populated for testing." color="bg-brand-indigo" darkOnHover />
+              <motion.div key="automation" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <FeatureCard icon={<Zap size={24} />} title="Test Generator" subtitle="Contextual Automation" description="Instantly generate Jest/Vitest tests for the 14 uncovered modules found." color="bg-brand-pink" darkOnHover />
+                  <FeatureCard icon={<Sparkles size={24} />} title="Multi-step Work" subtitle="Complex Pipelines" description="Deploy a staging environment with mock data populated for testing." color="bg-brand-indigo" darkOnHover />
                 </div>
                 <div className="bg-white dark:bg-brand-dark-card border-brutal rounded-brutal-lg p-6 md:p-8 shadow-brutal flex flex-col gap-6">
                   <div className="flex items-center justify-between">
-                    <h3 className="text-2xl font-black italic flex items-center gap-3 dark:text-white">
-                      <Wand2 className="text-brand-pink" size={28} /> Automation Lab
-                    </h3>
-                    <button className="bg-brand-black dark:bg-white dark:text-brand-black text-white px-4 py-2 rounded-full text-xs font-black uppercase hover:scale-105 transition-transform">
-                      New Strategy
-                    </button>
+                    <h3 className="text-2xl font-black italic flex items-center gap-3 dark:text-white"><Wand2 className="text-brand-pink" size={28} /> Automation Lab</h3>
+                    <button className="bg-brand-black dark:bg-white dark:text-brand-black text-white px-4 py-2 rounded-full text-xs font-black uppercase hover:scale-105 transition-transform">New Strategy</button>
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <ActionItem icon={<FileCode2 size={20} />} title="Generate Docs"   desc="Create README for all submodules"    tag="Documentation" onClick={() => launchWorkflow("Generating Docs",     <FileCode2   size={16} />)} />
-                    <ActionItem icon={<ShieldCheck size={20} />} title="Security Patch" desc="Update vulnerable dependencies"      tag="Safety"        onClick={() => launchWorkflow("Security Patching",   <ShieldCheck size={16} />)} />
-                    <ActionItem icon={<GitBranch size={20} />} title="Refactor Props"   desc="Convert interfaces to types"         tag="Refactoring"   onClick={() => launchWorkflow("Refactoring Types",   <GitBranch   size={16} />)} />
-                    <ActionItem icon={<Settings size={20} />} title="CI/CD Config"      desc="Generate GitHub Action workflows"    tag="DevOps"        onClick={() => launchWorkflow("Configuring CI/CD",  <Settings    size={16} />)} />
+                    <ActionItem icon={<FileCode2 size={20} />} title="Generate Docs"   desc="Create README for all submodules"  tag="Documentation" onClick={() => launchWorkflow("Generating Docs",    <FileCode2   size={16} />)} />
+                    <ActionItem icon={<ShieldCheck size={20} />} title="Security Patch" desc="Update vulnerable dependencies"    tag="Safety"        onClick={() => launchWorkflow("Security Patching",  <ShieldCheck size={16} />)} />
+                    <ActionItem icon={<GitBranch size={20} />} title="Refactor Props"   desc="Convert interfaces to types"       tag="Refactoring"   onClick={() => launchWorkflow("Refactoring Types",  <GitBranch   size={16} />)} />
+                    <ActionItem icon={<Settings size={20} />} title="CI/CD Config"      desc="Generate GitHub Action workflows"  tag="DevOps"        onClick={() => launchWorkflow("Configuring CI/CD", <Settings    size={16} />)} />
                   </div>
                 </div>
               </motion.div>
@@ -784,77 +830,51 @@ export default function App() {
 
             {activeTab === "explainer" && (
               <motion.div key="explainer" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}
-                className="bg-white dark:bg-brand-dark-card border-brutal rounded-brutal-lg p-6 md:p-8 shadow-brutal flex flex-col gap-6"
+                className="bg-white dark:bg-brand-dark-card border-brutal rounded-brutal-lg p-6 md:p-8 shadow-brutal flex flex-col gap-5"
               >
                 <div className="flex items-center justify-between flex-wrap gap-2">
-                  <h3 className="text-2xl font-black italic flex items-center gap-3 dark:text-white">
-                    <MessageSquareCode className="text-brand-indigo" size={28} /> Bob's Logic Explainer
-                  </h3>
-                  <div className="flex items-center gap-3">
-                    <button onClick={() => setShowCodeInput(true)}
-                      className="flex items-center gap-1.5 px-3 py-2 border-2 border-brand-black dark:border-white rounded-lg font-black text-[10px] uppercase hover:bg-brand-indigo hover:text-white dark:text-white transition-colors"
-                    >
-                      <Upload size={12} /> Paste Code
-                    </button>
+                  <h3 className="text-2xl font-black italic flex items-center gap-3 dark:text-white"><MessageSquareCode className="text-brand-indigo" size={28} /> Bob's Logic Explainer</h3>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button onClick={() => setShowCodeInput(true)} className="flex items-center gap-1.5 px-3 py-2 border-2 border-brand-black dark:border-white rounded-lg font-black text-[10px] uppercase hover:bg-brand-indigo hover:text-white dark:text-white transition-colors"><Upload size={12} /> Paste Code</button>
+                    <button onClick={() => fileInputRef.current?.click()} className="flex items-center gap-1.5 px-3 py-2 border-2 border-brand-black dark:border-white rounded-lg font-black text-[10px] uppercase hover:bg-brand-teal hover:text-brand-black dark:text-white transition-colors"><FolderOpen size={12} /> Upload File</button>
                     {chatHistory.length > 0 && (
-                      <button onClick={() => setChatHistory([])}
-                        className="flex items-center gap-1.5 px-3 py-2 border-2 border-brand-black/30 dark:border-white/30 rounded-lg font-black text-[10px] uppercase hover:border-brand-pink hover:text-brand-pink dark:text-white/60 transition-colors"
-                      >
-                        <X size={12} /> Clear chat
-                      </button>
+                      <button onClick={() => setChatHistory([])} className="flex items-center gap-1.5 px-3 py-2 border-2 border-brand-black/30 dark:border-white/30 rounded-lg font-black text-[10px] uppercase hover:border-brand-pink hover:text-brand-pink dark:text-white/60 transition-colors"><X size={12} /> Clear</button>
                     )}
-                    <div className="flex items-center gap-2 text-xs font-black text-brand-indigo/60 dark:text-brand-teal uppercase tracking-widest">
-                      <div className="w-2 h-2 bg-brand-teal rounded-full animate-pulse" />
-                      Repo Context: Active
+                    <div className="flex items-center gap-2 text-[10px] font-black text-brand-indigo/60 dark:text-brand-teal uppercase">
+                      <div className="w-2 h-2 bg-brand-teal rounded-full animate-pulse" /> Repo Context: Active
                     </div>
                   </div>
                 </div>
 
-                {/* Chat history */}
-                <div className="flex flex-col gap-4 max-h-[420px] overflow-y-auto pr-1">
+                {/* Chat */}
+                <div className="flex flex-col gap-4 max-h-[460px] overflow-y-auto pr-1">
                   {chatHistory.length === 0 && !loading && (
                     <div className="bg-brand-bg dark:bg-brand-dark-bg rounded-brutal p-6 border-2 border-dashed border-brand-black/20 dark:border-white/20 font-mono text-sm">
-                      <p className="text-brand-black/40 dark:text-white/40 italic">
-                        Select a file from the Intelligence tab, paste your own code, or type a question below.
-                      </p>
+                      <p className="text-brand-black/40 dark:text-white/40 italic">Select a file, upload your own code, connect a GitHub repo, or type a question below.</p>
                     </div>
                   )}
-
                   <AnimatePresence>
                     {chatHistory.map(msg => (
-                      <motion.div key={msg.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
-                        className={`flex gap-3 ${msg.role === "user" ? "flex-row-reverse" : "flex-row"}`}
-                      >
-                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center border-2 shrink-0 ${
-                          msg.role === "bob"
-                            ? "bg-brand-indigo border-brand-black dark:border-white"
-                            : "bg-brand-pink border-brand-black dark:border-white"
-                        }`}>
+                      <motion.div key={msg.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className={`flex gap-3 ${msg.role === "user" ? "flex-row-reverse" : "flex-row"}`}>
+                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center border-2 shrink-0 ${msg.role === "bob" ? "bg-brand-indigo border-brand-black dark:border-white" : "bg-brand-pink border-brand-black dark:border-white"}`}>
                           <span className="text-[10px] text-white font-black">{msg.role === "bob" ? "B" : "Y"}</span>
                         </div>
-                        <div className={`flex-1 max-w-[85%] ${msg.role === "user" ? "items-end" : "items-start"} flex flex-col gap-2`}>
+                        <div className={`flex-1 max-w-[85%] flex flex-col gap-2 ${msg.role === "user" ? "items-end" : "items-start"}`}>
                           {msg.role === "user" ? (
-                            <div className="bg-brand-pink text-white px-4 py-3 rounded-2xl rounded-tr-sm font-bold text-sm">
-                              {msg.content}
-                            </div>
+                            <div className="bg-brand-pink text-white px-4 py-3 rounded-2xl rounded-tr-sm font-bold text-sm">{msg.content}</div>
                           ) : (
-                            <div className="bg-brand-bg dark:bg-brand-dark-bg border-2 border-dashed border-brand-black/20 dark:border-white/20 rounded-2xl rounded-tl-sm p-4 font-mono text-sm space-y-3">
-                              <div className="flex gap-2 flex-wrap">
-                                {msg.category && (
-                                  <span className="bg-brand-indigo/10 text-brand-indigo dark:text-brand-teal text-[9px] font-black uppercase px-2 py-1 rounded border border-brand-indigo/20">
-                                    {msg.category}
-                                  </span>
-                                )}
-                                {msg.impact && (
-                                  <span className="bg-brand-teal text-brand-black text-[9px] font-black uppercase px-2 py-1 rounded border border-brand-black">
-                                    {msg.impact}
-                                  </span>
-                                )}
-                              </div>
+                            <div className="bg-brand-bg dark:bg-brand-dark-bg border-2 border-dashed border-brand-black/20 dark:border-white/20 rounded-2xl rounded-tl-sm p-4 font-mono text-sm space-y-3 w-full">
+                              {(msg.category || msg.impact) && (
+                                <div className="flex gap-2 flex-wrap">
+                                  {msg.category && <span className="bg-brand-indigo/10 text-brand-indigo dark:text-brand-teal text-[9px] font-black uppercase px-2 py-1 rounded border border-brand-indigo/20">{msg.category}</span>}
+                                  {msg.impact && <span className="bg-brand-teal text-brand-black text-[9px] font-black uppercase px-2 py-1 rounded border border-brand-black">{msg.impact}</span>}
+                                </div>
+                              )}
                               <p className="leading-relaxed text-brand-black dark:text-white/80 font-medium text-[13px]">
                                 "{msg.content}"
+                                {msg.streaming && <span className="inline-block w-1.5 h-3 bg-brand-indigo dark:bg-brand-teal ml-1 animate-pulse rounded-sm" />}
                               </p>
-                              {msg.suggestions && (
+                              {!msg.streaming && msg.suggestions && (
                                 <div className="space-y-1.5 pt-1">
                                   <p className="text-[9px] font-black text-brand-indigo/40 dark:text-white/40 uppercase">Suggestions:</p>
                                   {msg.suggestions.map((s, i) => (
@@ -863,8 +883,7 @@ export default function App() {
                                       <span className="text-[11px] font-bold dark:text-white/80">{s}</span>
                                     </div>
                                   ))}
-                                  <button
-                                    onClick={() => launchWorkflow("Applying Transformation", <Sparkles size={16} />)}
+                                  <button onClick={() => launchWorkflow("Applying Transformation", <Sparkles size={16} />)}
                                     className="w-full mt-2 bg-brand-indigo text-white p-2.5 rounded-xl border-2 border-brand-black dark:border-white font-black uppercase text-[10px] hover:bg-brand-pink transition-colors flex items-center justify-center gap-2"
                                   >
                                     <Wand2 size={14} /> Apply Automated Refactor
@@ -877,44 +896,34 @@ export default function App() {
                       </motion.div>
                     ))}
                   </AnimatePresence>
-
-                  {loading && (
+                  {loading && chatHistory[chatHistory.length - 1]?.role !== "bob" && (
                     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex gap-3">
                       <div className="w-8 h-8 rounded-lg bg-brand-indigo border-2 border-brand-black dark:border-white flex items-center justify-center shrink-0">
                         <span className="text-[10px] text-white font-black">B</span>
                       </div>
                       <div className="bg-brand-bg dark:bg-brand-dark-bg border-2 border-dashed border-brand-black/20 dark:border-white/20 rounded-2xl rounded-tl-sm px-5 py-4 flex items-center gap-3">
                         <Loader2 className="animate-spin text-brand-pink" size={18} />
-                        <span className="text-xs font-black uppercase tracking-widest text-brand-indigo/60 dark:text-brand-teal">
-                          Bob is reading the repo...
-                        </span>
+                        <span className="text-xs font-black uppercase tracking-widest text-brand-indigo/60 dark:text-brand-teal">Bob is reading the repo...</span>
                       </div>
                     </motion.div>
                   )}
                   <div ref={chatEndRef} />
                 </div>
 
-                {/* Input */}
                 <div className="relative">
-                  <input type="text" value={query} onChange={e => setQuery(e.target.value)}
-                    onKeyDown={e => { if (e.key === "Enter") handleAskBob(); }}
+                  <input type="text" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === "Enter") handleAskBob(); }}
                     placeholder="Ask Bob about any module, logic, or transformation..."
-                    className="w-full bg-brand-bg dark:bg-brand-dark-bg p-4 pr-14 rounded-full border-2 border-brand-black dark:border-white font-bold focus:outline-none focus:ring-4 focus:ring-brand-pink/20 transition-all dark:text-white"
+                    className="w-full bg-brand-bg dark:bg-brand-dark-bg p-4 pr-14 rounded-full border-2 border-brand-black dark:border-white font-bold focus:outline-none focus:ring-4 focus:ring-brand-pink/20 dark:text-white"
                   />
                   <button onClick={() => handleAskBob()} disabled={loading || !query.trim()}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 p-2.5 bg-brand-pink text-white rounded-full shadow-sm hover:scale-110 active:scale-95 disabled:opacity-50 disabled:scale-100 transition-all"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 p-2.5 bg-brand-pink text-white rounded-full hover:scale-110 active:scale-95 disabled:opacity-50 disabled:scale-100 transition-all"
                   >
                     {loading ? <Loader2 className="animate-spin" size={18} /> : <Search size={18} />}
                   </button>
                 </div>
-
                 <div className="flex flex-wrap gap-3">
                   {["Explain auth flow", "Find performance bottlenecks", "Map external APIs", "Review API client resilience"].map((q, i) => (
-                    <button key={i} onClick={() => handleAskBob(q)}
-                      className="text-[10px] font-black uppercase text-brand-indigo/60 hover:text-brand-pink transition-colors border-b border-dashed border-brand-indigo/20 hover:border-brand-pink"
-                    >
-                      {q}
-                    </button>
+                    <button key={i} onClick={() => handleAskBob(q)} className="text-[10px] font-black uppercase text-brand-indigo/60 hover:text-brand-pink transition-colors border-b border-dashed border-brand-indigo/20 hover:border-brand-pink">{q}</button>
                   ))}
                 </div>
               </motion.div>
@@ -923,102 +932,71 @@ export default function App() {
         </div>
 
         {/* Sidebar */}
-        <aside className="lg:col-span-4 flex flex-col gap-6 md:gap-8">
-          <div className="bg-brand-pink/5 dark:bg-brand-pink/10 border-brutal rounded-brutal-lg p-6 md:p-8 flex flex-col gap-6 md:gap-8 shadow-brutal">
+        <aside className="lg:col-span-4 flex flex-col gap-6">
+          <div className="bg-brand-pink/5 dark:bg-brand-pink/10 border-brutal rounded-brutal-lg p-6 md:p-8 flex flex-col gap-6 shadow-brutal">
             <div className="flex items-center justify-between">
-              <h2 className="text-2xl font-black uppercase italic flex items-center gap-2 dark:text-white">
-                <ActivityIcon size={24} /> Live Pulse
-              </h2>
+              <h2 className="text-2xl font-black uppercase italic flex items-center gap-2 dark:text-white"><ActivityIcon size={24} /> Live Pulse</h2>
               <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(239,68,68,0.5)]" />
             </div>
-
-            <div className="flex flex-col gap-6">
-              <div className="space-y-3">
-                <p className="text-[10px] font-black uppercase text-brand-indigo dark:text-brand-teal tracking-widest">Active Discoveries</p>
-                <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
-                  className="p-3 bg-brand-black dark:bg-brand-indigo rounded-xl border border-white/10"
-                >
-                  <div className="flex justify-between items-center mb-1">
-                    <span className="text-[9px] font-black text-brand-teal uppercase">Architectural Drift</span>
-                    <span className="text-[8px] text-white/40 uppercase">2m ago</span>
-                  </div>
-                  <p className="text-[11px] text-white font-medium leading-tight">
-                    Legacy fetch pattern detected in /services/old-api vs new Axios standard.
-                  </p>
-                </motion.div>
-                <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} transition={{ delay: 0.2 }}
-                  className="p-3 bg-brand-pink/10 dark:bg-brand-pink/20 rounded-xl border border-brand-pink/30"
-                >
-                  <div className="flex justify-between items-center mb-1">
-                    <span className="text-[9px] font-black text-brand-pink uppercase">Optimization Gap</span>
-                    <span className="text-[8px] text-brand-black/40 dark:text-white/60 uppercase">5m ago</span>
-                  </div>
-                  <p className="text-[11px] text-brand-black dark:text-white font-medium leading-tight">
-                    Memoization gap in HeavyGraph.tsx causing 12ms UI stutter.
-                  </p>
-                </motion.div>
+            <div className="space-y-3">
+              <p className="text-[10px] font-black uppercase text-brand-indigo dark:text-brand-teal tracking-widest">Active Discoveries</p>
+              <div className="p-3 bg-brand-black dark:bg-brand-indigo rounded-xl border border-white/10">
+                <div className="flex justify-between items-center mb-1">
+                  <span className="text-[9px] font-black text-brand-teal uppercase">Architectural Drift</span>
+                  <span className="text-[8px] text-white/40 uppercase">2m ago</span>
+                </div>
+                <p className="text-[11px] text-white font-medium leading-tight">Legacy fetch pattern detected in /services/old-api vs new Axios standard.</p>
               </div>
-
-              {/* Cognitive depth */}
-              <div className="bg-brand-black dark:bg-brand-dark-card border-2 border-white/10 rounded-2xl p-4 hover:scale-[1.02] transition-transform">
-                <div className="flex items-center gap-3 mb-4">
-                  <div className="w-2 h-2 bg-brand-teal rounded-full animate-pulse" />
-                  <span className="text-[10px] font-black text-white uppercase tracking-widest">Bob Cognitive Depth</span>
+              <div className="p-3 bg-brand-pink/10 dark:bg-brand-pink/20 rounded-xl border border-brand-pink/30">
+                <div className="flex justify-between items-center mb-1">
+                  <span className="text-[9px] font-black text-brand-pink uppercase">Optimization Gap</span>
+                  <span className="text-[8px] text-brand-black/40 dark:text-white/60 uppercase">5m ago</span>
                 </div>
-                <div className="h-6 bg-white/10 rounded-full border border-white/20 overflow-hidden relative">
-                  <motion.div initial={{ width: 0 }} animate={{ width: "94%" }} transition={{ duration: 1.5, ease: "easeOut" }}
-                    className="h-full bg-brand-teal shadow-[0_0_15px_rgba(17,211,188,0.6)]"
-                  />
-                  <span className="absolute inset-0 flex items-center justify-center text-[10px] font-black text-brand-black">
-                    94.8% REPO INDEXED
-                  </span>
-                </div>
+                <p className="text-[11px] text-brand-black dark:text-white font-medium leading-tight">Memoization gap in HeavyGraph.tsx causing 12ms UI stutter.</p>
               </div>
-
-              {/* Workflows */}
-              {activeWorkflows.length > 0 && (
-                <div className="space-y-3 pt-4 border-t border-brand-black/10">
-                  <p className="text-[10px] font-black uppercase text-brand-pink tracking-widest">Active Automation</p>
-                  <AnimatePresence>
-                    {activeWorkflows.slice(0, 5).map(w => (
-                      <motion.div key={w.id} initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}>
-                        <TaskItem label={w.label} progress={w.progress} icon={w.icon} done={w.done} />
-                      </motion.div>
-                    ))}
-                  </AnimatePresence>
-                </div>
-              )}
             </div>
-
-            {/* Recommendations */}
-            <div className="pt-6 border-t-2 border-brand-black/10">
-              <p className="text-xs font-black uppercase text-brand-pink mb-4">Bob's Active Recommendations</p>
-              <div className="space-y-4">
+            <div className="bg-brand-black dark:bg-brand-dark-card border-2 border-white/10 rounded-2xl p-4 hover:scale-[1.02] transition-transform">
+              <div className="flex items-center gap-3 mb-3">
+                <div className="w-2 h-2 bg-brand-teal rounded-full animate-pulse" />
+                <span className="text-[10px] font-black text-white uppercase tracking-widest">Bob Cognitive Depth</span>
+              </div>
+              <div className="h-6 bg-white/10 rounded-full border border-white/20 overflow-hidden relative">
+                <motion.div initial={{ width: 0 }} animate={{ width: "94%" }} transition={{ duration: 1.5, ease: "easeOut" }} className="h-full bg-brand-teal shadow-[0_0_15px_rgba(17,211,188,0.6)]" />
+                <span className="absolute inset-0 flex items-center justify-center text-[10px] font-black text-brand-black">94.8% REPO INDEXED</span>
+              </div>
+            </div>
+            {activeWorkflows.length > 0 && (
+              <div className="space-y-3 pt-4 border-t border-brand-black/10">
+                <p className="text-[10px] font-black uppercase text-brand-pink tracking-widest">Active Automation</p>
+                <AnimatePresence>
+                  {activeWorkflows.slice(0, 5).map(w => (
+                    <motion.div key={w.id} initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}>
+                      <TaskItem label={w.label} progress={w.progress} icon={w.icon} done={w.done} />
+                    </motion.div>
+                  ))}
+                </AnimatePresence>
+              </div>
+            )}
+            <div className="pt-4 border-t-2 border-brand-black/10">
+              <p className="text-xs font-black uppercase text-brand-pink mb-3">Bob's Active Recommendations</p>
+              <div className="space-y-3">
                 <AnimatePresence mode="popLayout">
                   {recommendations.map(rec => (
                     <motion.div key={rec.id} initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}>
-                      <RecommendationItem message={rec.message} time={rec.time}
-                        onFix={rec.action ? () => launchWorkflow(`Fixing: ${rec.action!.type}`, rec.action!.icon) : undefined}
-                      />
+                      <RecommendationItem message={rec.message} time={rec.time} onFix={rec.action ? () => launchWorkflow(`Fixing: ${rec.action!.type}`, rec.action!.icon) : undefined} />
                     </motion.div>
                   ))}
                 </AnimatePresence>
               </div>
             </div>
           </div>
-
-          {/* CTA */}
           <motion.div whileHover={{ scale: 1.02 }} onClick={() => setActiveTab("explainer")}
             className="bg-brand-indigo p-6 md:p-8 rounded-brutal border-brutal shadow-brutal text-white flex flex-col gap-4 overflow-hidden relative cursor-pointer"
           >
             <div className="absolute top-0 right-0 p-4 opacity-20"><Sparkles size={64} /></div>
             <h4 className="text-2xl font-black italic">Turn idea<br />into impact.</h4>
-            <p className="text-xs font-bold text-white/70 uppercase tracking-widest leading-relaxed">
-              Use Bob to automate the tasks that slow you down.
-            </p>
-            <button className="bg-white text-brand-indigo px-4 py-2 rounded-full font-black text-xs uppercase self-start hover:bg-brand-yellow hover:text-brand-black transition-colors">
-              Start with Bob
-            </button>
+            <p className="text-xs font-bold text-white/70 uppercase tracking-widest leading-relaxed">Use Bob to automate the tasks that slow you down.</p>
+            <button className="bg-white text-brand-indigo px-4 py-2 rounded-full font-black text-xs uppercase self-start hover:bg-brand-yellow hover:text-brand-black transition-colors">Start with Bob</button>
           </motion.div>
         </aside>
       </main>
@@ -1026,9 +1004,7 @@ export default function App() {
       <footer className="h-12 px-6 md:px-10 bg-brand-black text-white flex items-center justify-between text-[10px] font-black uppercase tracking-[0.2em] sticky bottom-0">
         <div className="flex gap-4 md:gap-8 overflow-hidden whitespace-nowrap">
           <span className="opacity-60">IBM Bob Core v2.1</span>
-          <span className="text-brand-teal flex items-center gap-1">
-            <span className="w-1.5 h-1.5 bg-brand-teal rounded-full animate-ping" /> Sync: Stable
-          </span>
+          <span className="text-brand-teal flex items-center gap-1"><span className="w-1.5 h-1.5 bg-brand-teal rounded-full animate-ping" /> Sync: Stable</span>
         </div>
         <div className="hidden sm:flex gap-8">
           <span className="opacity-60">Memory: 4.2GB</span>
@@ -1039,28 +1015,32 @@ export default function App() {
   );
 }
 
-// ─── Sub-components ───────────────────────────────────────────────────────────
-function FeatureCard({ icon, title, subtitle, description, color, darkOnHover = false }: {
-  icon: ReactNode; title: string; subtitle: string; description: string; color: string; darkOnHover?: boolean;
-}) {
+// ─── Shared components ────────────────────────────────────────────────────────
+function Modal({ onClose, title, icon, children, wide }: { onClose: () => void; title: string; icon: ReactNode; children: ReactNode; wide?: boolean; }) {
   return (
-    <motion.div whileHover={{ y: -4, x: -4 }}
-      className={`bg-white dark:bg-brand-dark-card p-6 rounded-brutal border-brutal shadow-brutal transition-colors group cursor-pointer ${
-        darkOnHover ? "hover:bg-brand-pink hover:text-white" : `hover:${color}`
-      }`}
-    >
-      <div className={`w-12 h-12 ${color} group-hover:bg-white dark:group-hover:bg-brand-dark-bg rounded-2xl mb-4 flex items-center justify-center border-2 border-brand-black dark:border-white transition-colors`}>
-        {icon}
-      </div>
-      <p className={`text-[10px] font-black uppercase tracking-widest mb-1 ${darkOnHover ? "group-hover:text-white/70 text-brand-pink" : "text-brand-indigo dark:text-brand-teal"}`}>
-        {subtitle}
-      </p>
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <motion.div initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.9, y: 20 }} onClick={e => e.stopPropagation()}
+        className={`bg-white dark:bg-brand-dark-card border-brutal rounded-brutal-lg p-6 md:p-8 w-full ${wide ? "max-w-2xl" : "max-w-lg"} flex flex-col gap-4 shadow-brutal-lg max-h-[90vh] overflow-y-auto`}
+      >
+        <div className="flex items-center justify-between">
+          <h3 className="text-2xl font-black italic flex items-center gap-2 dark:text-white">{icon}{title}</h3>
+          <button onClick={onClose} className="p-2 hover:bg-brand-bg dark:hover:bg-white/10 rounded-lg transition-colors"><X size={20} className="dark:text-white" /></button>
+        </div>
+        {children}
+      </motion.div>
+    </motion.div>
+  );
+}
+function FeatureCard({ icon, title, subtitle, description, color, darkOnHover = false }: { icon: ReactNode; title: string; subtitle: string; description: string; color: string; darkOnHover?: boolean; }) {
+  return (
+    <motion.div whileHover={{ y: -4, x: -4 }} className={`bg-white dark:bg-brand-dark-card p-6 rounded-brutal border-brutal shadow-brutal transition-colors group cursor-pointer ${darkOnHover ? "hover:bg-brand-pink" : ""}`}>
+      <div className={`w-12 h-12 ${color} group-hover:bg-white dark:group-hover:bg-brand-dark-bg rounded-2xl mb-4 flex items-center justify-center border-2 border-brand-black dark:border-white transition-colors`}>{icon}</div>
+      <p className={`text-[10px] font-black uppercase tracking-widest mb-1 ${darkOnHover ? "group-hover:text-white/70 text-brand-pink" : "text-brand-indigo dark:text-brand-teal"}`}>{subtitle}</p>
       <h3 className="text-xl font-black mb-2 dark:text-white">{title}</h3>
       <p className="text-sm font-bold opacity-60 dark:opacity-40 leading-relaxed">{description}</p>
     </motion.div>
   );
 }
-
 function TaskItem({ label, progress, icon, done }: { label: string; progress: number; icon: ReactNode; done?: boolean; }) {
   return (
     <div className="flex flex-col gap-2 mb-3">
@@ -1072,44 +1052,33 @@ function TaskItem({ label, progress, icon, done }: { label: string; progress: nu
         <span className={done ? "text-brand-teal" : ""}>{done ? "Done" : `${progress}%`}</span>
       </div>
       <div className="h-4 bg-brand-black/10 dark:bg-white/5 rounded-full border-2 border-brand-black dark:border-white overflow-hidden p-0.5">
-        <motion.div initial={{ width: 0 }} animate={{ width: `${progress}%` }} transition={{ duration: 0.5, ease: "easeOut" }}
-          className={`h-full rounded-full ${done ? "bg-brand-teal" : "bg-brand-pink"}`}
-        />
+        <motion.div initial={{ width: 0 }} animate={{ width: `${progress}%` }} transition={{ duration: 0.5, ease: "easeOut" }} className={`h-full rounded-full ${done ? "bg-brand-teal" : "bg-brand-pink"}`} />
       </div>
     </div>
   );
 }
-
 function RecommendationItem({ message, time, onFix }: { message: string; time: string; onFix?: () => void; }) {
   return (
     <div className="flex gap-3 group relative">
-      <div className="w-8 h-8 bg-brand-indigo rounded-lg flex items-center justify-center border border-brand-black dark:border-white shrink-0">
-        <span className="text-[10px] text-white font-black">B</span>
-      </div>
+      <div className="w-8 h-8 bg-brand-indigo rounded-lg flex items-center justify-center border border-brand-black dark:border-white shrink-0"><span className="text-[10px] text-white font-black">B</span></div>
       <div className="flex flex-col flex-1 pr-8">
         <p className="text-xs font-bold leading-tight text-brand-pink">{message}</p>
         <span className="text-[9px] font-black opacity-40 dark:opacity-60 uppercase mt-0.5">{time}</span>
       </div>
       {onFix && (
-        <button onClick={onFix}
-          className="absolute right-0 top-0 p-1.5 bg-brand-teal text-brand-black rounded-lg border border-brand-black dark:border-white opacity-0 group-hover:opacity-100 hover:scale-110 active:scale-95 transition-all"
-          title="Auto-fix"
-        >
+        <button onClick={onFix} className="absolute right-0 top-0 p-1.5 bg-brand-teal text-brand-black rounded-lg border border-brand-black dark:border-white opacity-0 group-hover:opacity-100 hover:scale-110 active:scale-95 transition-all" title="Auto-fix">
           <Zap size={10} fill="currentColor" />
         </button>
       )}
     </div>
   );
 }
-
 function ActionItem({ icon, title, desc, tag, onClick }: { icon: ReactNode; title: string; desc: string; tag: string; onClick: () => void; }) {
   return (
-    <motion.div whileHover={{ scale: 1.02 }} onClick={onClick}
-      className="p-4 bg-brand-bg dark:bg-brand-black/40 rounded-brutal border-2 border-brand-black dark:border-white/40 group cursor-pointer hover:bg-white dark:hover:bg-brand-indigo/20 transition-colors"
-    >
+    <motion.div whileHover={{ scale: 1.02 }} onClick={onClick} className="p-4 bg-brand-bg dark:bg-brand-black/40 rounded-brutal border-2 border-brand-black dark:border-white/40 group cursor-pointer hover:bg-white dark:hover:bg-brand-indigo/20 transition-colors">
       <div className="flex items-center justify-between mb-2">
         <div className="p-2 bg-white dark:bg-brand-dark-bg rounded-lg border border-brand-black dark:border-white/20 group-hover:bg-brand-indigo group-hover:text-white transition-colors">{icon}</div>
-        <span className="text-[8px] font-black uppercase tracking-widest bg-brand-teal text-brand-black px-2 py-0.5 rounded-full border border-brand-black dark:border-white/20">{tag}</span>
+        <span className="text-[8px] font-black uppercase bg-brand-teal text-brand-black px-2 py-0.5 rounded-full border border-brand-black dark:border-white/20">{tag}</span>
       </div>
       <h4 className="text-sm font-black mb-1 dark:text-white">{title}</h4>
       <p className="text-[11px] font-bold opacity-60 dark:opacity-50 leading-tight dark:text-white/70">{desc}</p>
