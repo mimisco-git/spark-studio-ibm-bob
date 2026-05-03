@@ -4,19 +4,18 @@ import {
   MessageSquareCode, Search, Sparkles, Loader2, PieChart as PieChartIcon,
   Layers, Wand2, FileCode2, GitBranch, Settings, Sun, Moon, Download,
   AlertTriangle, CheckCircle2, TrendingUp, ArrowRight, X, Menu, Upload,
-  Terminal, ChevronRight, Github, ListTodo, FolderOpen,
+  Terminal, ChevronRight, Github, ListTodo, FolderOpen, Copy, Check,
+  FlaskConical, Shield, FileText,
 } from "lucide-react";
 import { useState, useEffect, ReactNode, useCallback, useRef } from "react";
 import {
   askBobStream, analyzeBobRepo, analyzeFile, generateSprintPlan,
-  fetchGitHubRepo, analyzeGitHubRepo,
-  BobInsight, BobRepoAnalysis, SprintPlan, GitHubRepoInfo,
+  fetchGitHubRepo, analyzeGitHubRepo, generateDocumentation, generateTests,
+  automateGenerateDocs, automateSecurityAudit, automateRefactor, automateCICD,
+  BobInsight, BobRepoAnalysis, SprintPlan, GitHubRepoInfo, AutomationResult,
 } from "./services/bobService";
-import {
-  PieChart, Pie, Cell, ResponsiveContainer, Tooltip, BarChart, Bar, XAxis, YAxis,
-} from "recharts";
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, BarChart, Bar, XAxis, YAxis } from "recharts";
 
-// ─── Static data ──────────────────────────────────────────────────────────────
 const REPO_DATA = [
   { name: "TypeScript", value: 65, color: "#0F62FE" },
   { name: "Testing",    value: 15, color: "#D12771" },
@@ -51,68 +50,67 @@ const BOOT_STEPS = [
   "Context engine ready.",
 ];
 const PRIORITY_COLORS: Record<string, string> = {
-  Critical: "bg-red-500",
-  High:     "bg-brand-pink",
-  Medium:   "bg-brand-yellow",
-  Low:      "bg-brand-teal",
+  Critical: "bg-red-500", High: "bg-brand-pink", Medium: "bg-brand-yellow", Low: "bg-brand-teal",
 };
 const EFFORT_COLORS: Record<string, string> = {
-  Small:  "text-brand-teal",
-  Medium: "text-brand-yellow",
-  Large:  "text-brand-pink",
+  Small: "text-brand-teal", Medium: "text-brand-yellow", Large: "text-brand-pink",
 };
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-type Recommendation = {
-  id: string; message: string; time: string;
-  action?: { type: string; icon: ReactNode };
-};
+type Recommendation = { id: string; message: string; time: string; action?: { type: string; icon: ReactNode }; };
 type Workflow = { id: string; label: string; progress: number; icon: ReactNode; done?: boolean; };
-type ChatMessage = {
-  id: string; role: "user" | "bob"; content: string; streaming?: boolean;
-  suggestions?: string[]; impact?: string; category?: string;
-};
+type ChatMessage = { id: string; role: "user" | "bob"; content: string; streaming?: boolean; suggestions?: string[]; impact?: string; category?: string; };
 
-const STORAGE_KEY = "spark_studio_chat_v1";
+const STORAGE_KEY = "spark_studio_chat_v2";
 
-// ─── Root ─────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [booted,         setBooted]         = useState(false);
-  const [bootStep,       setBootStep]       = useState(0);
-  const [showLanding,    setShowLanding]    = useState(true);
-  const [activeTab,      setActiveTab]      = useState("intelligence");
-  const [darkMode,       setDarkMode]       = useState(false);
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [query,          setQuery]          = useState("");
-  const [loading,        setLoading]        = useState(false);
-  const [repoLoading,    setRepoLoading]    = useState(false);
-  const [repoAnalysis,   setRepoAnalysis]   = useState<BobRepoAnalysis | null>(null);
-  const [selectedFile,   setSelectedFile]   = useState<string | null>(null);
-  const [chatHistory,    setChatHistory]    = useState<ChatMessage[]>(() => {
+  const [booted,          setBooted]          = useState(false);
+  const [bootStep,        setBootStep]        = useState(0);
+  const [showLanding,     setShowLanding]     = useState(true);
+  const [activeTab,       setActiveTab]       = useState("intelligence");
+  const [darkMode,        setDarkMode]        = useState(false);
+  const [mobileMenuOpen,  setMobileMenuOpen]  = useState(false);
+  const [query,           setQuery]           = useState("");
+  const [loading,         setLoading]         = useState(false);
+  const [repoLoading,     setRepoLoading]     = useState(false);
+  const [repoAnalysis,    setRepoAnalysis]    = useState<BobRepoAnalysis | null>(null);
+  const [selectedFile,    setSelectedFile]    = useState<string | null>(null);
+  const [copiedId,        setCopiedId]        = useState<string | null>(null);
+  const [chatHistory,     setChatHistory]     = useState<ChatMessage[]>(() => {
     try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); } catch { return []; }
   });
 
-  // Code paste modal
-  const [showCodeInput,  setShowCodeInput]  = useState(false);
-  const [codeInput,      setCodeInput]      = useState("");
+  // Code paste
+  const [showCodeInput,   setShowCodeInput]   = useState(false);
+  const [codeInput,       setCodeInput]       = useState("");
 
   // File upload
-  const [uploadedFile,   setUploadedFile]   = useState<{ name: string; content: string } | null>(null);
-  const [uploadLoading,  setUploadLoading]  = useState(false);
+  const [uploadedFile,    setUploadedFile]    = useState<{ name: string; content: string } | null>(null);
+  const [uploadLoading,   setUploadLoading]   = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // GitHub connector
-  const [showGithub,     setShowGithub]     = useState(false);
-  const [githubUrl,      setGithubUrl]      = useState("");
-  const [githubLoading,  setGithubLoading]  = useState(false);
-  const [githubInfo,     setGithubInfo]     = useState<GitHubRepoInfo | null>(null);
-  const [githubError,    setGithubError]    = useState("");
+  // GitHub
+  const [showGithub,      setShowGithub]      = useState(false);
+  const [githubUrl,       setGithubUrl]       = useState("");
+  const [githubLoading,   setGithubLoading]   = useState(false);
+  const [githubInfo,      setGithubInfo]      = useState<GitHubRepoInfo | null>(null);
+  const [githubError,     setGithubError]     = useState("");
 
-  // Sprint planner
-  const [showSprint,     setShowSprint]     = useState(false);
-  const [sprintInput,    setSprintInput]    = useState("");
-  const [sprintLoading,  setSprintLoading]  = useState(false);
-  const [sprintPlan,     setSprintPlan]     = useState<SprintPlan | null>(null);
+  // Sprint
+  const [showSprint,      setShowSprint]      = useState(false);
+  const [sprintInput,     setSprintInput]     = useState("");
+  const [sprintLoading,   setSprintLoading]   = useState(false);
+  const [sprintPlan,      setSprintPlan]      = useState<SprintPlan | null>(null);
+
+  // Bob Tools tab
+  const [toolsFile,       setToolsFile]       = useState<{ name: string; content: string } | null>(null);
+  const [toolsMode,       setToolsMode]       = useState<"docs" | "tests">("docs");
+  const [toolsOutput,     setToolsOutput]     = useState("");
+  const [toolsLoading,    setToolsLoading]    = useState(false);
+  const toolsFileRef = useRef<HTMLInputElement>(null);
+
+  // Automation results
+  const [automationResult, setAutomationResult] = useState<AutomationResult | null>(null);
+  const [automationLoading, setAutomationLoading] = useState<string | null>(null);
 
   const [recommendations, setRecommendations] = useState<Recommendation[]>([
     { id: "r1", message: "Found 3 circular dependencies in /src/lib", time: "Now" },
@@ -126,7 +124,6 @@ export default function App() {
   const workflowIntervals = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
   const chatEndRef        = useRef<HTMLDivElement>(null);
 
-  // Boot animation
   useEffect(() => {
     let step = 0;
     const t = setInterval(() => {
@@ -137,16 +134,11 @@ export default function App() {
     return () => clearInterval(t);
   }, []);
 
-  // Persist chat history
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(chatHistory.slice(-50)));
-  }, [chatHistory]);
-
+  useEffect(() => { localStorage.setItem(STORAGE_KEY, JSON.stringify(chatHistory.slice(-50))); }, [chatHistory]);
   useEffect(() => { document.documentElement.classList.toggle("dark", darkMode); }, [darkMode]);
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatHistory]);
   useEffect(() => { return () => { workflowIntervals.current.forEach(i => clearInterval(i)); }; }, []);
 
-  // Live pulse
   useEffect(() => {
     const items = [
       { msg: "Detected redundant state in authService.ts",  type: "Refactoring",   icon: <GitBranch    size={16} /> },
@@ -167,64 +159,41 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
-  // ── Core: ask Bob with streaming ───────────────────────────────────────────
+  const handleCopy = (text: string, id: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
+  };
+
   const handleAskBob = useCallback(async (overrideQuery?: string, codeCtx?: string) => {
     const q = (overrideQuery ?? query).trim();
     if (!q) return;
-
     const userMsg: ChatMessage = { id: `u-${Date.now()}`, role: "user", content: q };
     const bobId = `b-${Date.now()}`;
     const bobPlaceholder: ChatMessage = { id: bobId, role: "bob", content: "", streaming: true };
-
     setChatHistory(prev => [...prev, userMsg, bobPlaceholder]);
     setQuery("");
     setLoading(true);
-
-    const context = codeCtx
-      ? `User-provided code:\n${codeCtx}`
-      : selectedFile ? `File context: ${selectedFile}` : undefined;
-
-    const result = await askBobStream(
-      q,
-      (streamedText) => {
-        setChatHistory(prev => prev.map(m =>
-          m.id === bobId ? { ...m, content: streamedText } : m
-        ));
-      },
-      context
-    );
-
-    // Final update with all fields
+    const context = codeCtx ? `User-provided code:\n${codeCtx}` : selectedFile ? `File context: ${selectedFile}` : undefined;
+    const result = await askBobStream(q, (streamedText) => {
+      setChatHistory(prev => prev.map(m => m.id === bobId ? { ...m, content: streamedText } : m));
+    }, context);
     setChatHistory(prev => prev.map(m =>
-      m.id === bobId ? {
-        ...m,
-        content:     result.explanation,
-        suggestions: result.suggestions,
-        impact:      result.impact,
-        category:    result.category,
-        streaming:   false,
-      } : m
+      m.id === bobId ? { ...m, content: result.explanation, suggestions: result.suggestions, impact: result.impact, category: result.category, streaming: false } : m
     ));
     setLoading(false);
   }, [query, selectedFile]);
 
-  // ── File upload ────────────────────────────────────────────────────────────
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setUploadLoading(true);
     const content = await file.text();
     setUploadedFile({ name: file.name, content });
-
-    const userMsg: ChatMessage = {
-      id: `u-${Date.now()}`, role: "user",
-      content: `Analyze my uploaded file: ${file.name}`,
-    };
+    const userMsg: ChatMessage = { id: `u-${Date.now()}`, role: "user", content: `Analyze my uploaded file: ${file.name}` };
     const bobId = `b-${Date.now()}`;
-    const bobPlaceholder: ChatMessage = { id: bobId, role: "bob", content: "", streaming: true };
-    setChatHistory(prev => [...prev, userMsg, bobPlaceholder]);
+    setChatHistory(prev => [...prev, userMsg, { id: bobId, role: "bob", content: "", streaming: true }]);
     setActiveTab("explainer");
-
     const result = await analyzeFile(file.name, content);
     setChatHistory(prev => prev.map(m =>
       m.id === bobId ? { ...m, content: result.explanation, suggestions: result.suggestions, impact: result.impact, category: result.category, streaming: false } : m
@@ -233,14 +202,35 @@ export default function App() {
     if (e.target) e.target.value = "";
   };
 
-  const selectFile = (fileName: string) => {
-    const q = `Explain the logic and architecture of ${fileName}`;
-    setSelectedFile(fileName);
-    setActiveTab("explainer");
-    handleAskBob(q, `File context: ${fileName}`);
+  const handleToolsFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const content = await file.text();
+    setToolsFile({ name: file.name, content });
+    setToolsOutput("");
+    if (e.target) e.target.value = "";
   };
 
-  // ── Code paste ─────────────────────────────────────────────────────────────
+  const handleRunTool = async () => {
+    if (!toolsFile) return;
+    setToolsLoading(true);
+    setToolsOutput("");
+    if (toolsMode === "docs") {
+      const result = await generateDocumentation(toolsFile.name, toolsFile.content);
+      setToolsOutput(result);
+    } else {
+      const result = await generateTests(toolsFile.name, toolsFile.content);
+      setToolsOutput(result);
+    }
+    setToolsLoading(false);
+  };
+
+  const selectFile = (fileName: string) => {
+    setSelectedFile(fileName);
+    setActiveTab("explainer");
+    handleAskBob(`Explain the logic and architecture of ${fileName}`, `File context: ${fileName}`);
+  };
+
   const handleCodeAnalyze = () => {
     if (!codeInput.trim()) return;
     setShowCodeInput(false);
@@ -249,7 +239,6 @@ export default function App() {
     setCodeInput("");
   };
 
-  // ── GitHub connector ───────────────────────────────────────────────────────
   const handleGithubAnalyze = async () => {
     if (!githubUrl.trim()) return;
     setGithubLoading(true);
@@ -260,10 +249,6 @@ export default function App() {
       setGithubInfo(info);
       const analysis = await analyzeGitHubRepo(info);
       setRepoAnalysis(analysis);
-      const userMsg: ChatMessage = {
-        id: `u-${Date.now()}`, role: "user",
-        content: `Analyze the GitHub repo: ${githubUrl}`,
-      };
       const bobMsg: ChatMessage = {
         id: `b-${Date.now()}`, role: "bob",
         content: analysis.summary,
@@ -271,7 +256,7 @@ export default function App() {
         impact: `${analysis.risk} Risk`,
         category: "Architecture",
       };
-      setChatHistory(prev => [...prev, userMsg, bobMsg]);
+      setChatHistory(prev => [...prev, { id: `u-${Date.now()}`, role: "user", content: `Analyze the GitHub repo: ${githubUrl}` }, bobMsg]);
       setActiveTab("explainer");
       setShowGithub(false);
     } catch (err) {
@@ -280,7 +265,6 @@ export default function App() {
     setGithubLoading(false);
   };
 
-  // ── Sprint planner ─────────────────────────────────────────────────────────
   const handleSprintPlan = async () => {
     if (!sprintInput.trim()) return;
     setSprintLoading(true);
@@ -289,7 +273,6 @@ export default function App() {
     setSprintLoading(false);
   };
 
-  // ── Analyze repo ───────────────────────────────────────────────────────────
   const handleAnalyzeRepo = async () => {
     setRepoLoading(true);
     const result = await analyzeBobRepo();
@@ -297,7 +280,22 @@ export default function App() {
     setRepoLoading(false);
   };
 
-  // ── Workflows ──────────────────────────────────────────────────────────────
+  const handleAutomation = async (type: "docs" | "security" | "refactor" | "cicd", label: string, icon: ReactNode) => {
+    setAutomationLoading(type);
+    setAutomationResult(null);
+    const context = githubInfo
+      ? `Repo: ${githubInfo.name}\nLanguage: ${githubInfo.language}\nFiles: ${githubInfo.files.slice(0, 20).join(", ")}\nDescription: ${githubInfo.description}`
+      : `Project context: TypeScript React application with 2,450 files. Auth service, API client, data mapper, Prisma schema, React hooks.`;
+    let result: AutomationResult;
+    if (type === "docs") result = await automateGenerateDocs(context);
+    else if (type === "security") result = await automateSecurityAudit(context);
+    else if (type === "refactor") result = await automateRefactor(context);
+    else result = await automateCICD(context);
+    setAutomationResult(result);
+    setAutomationLoading(null);
+    launchWorkflow(label, icon);
+  };
+
   const launchWorkflow = (label: string, icon: ReactNode) => {
     const id = Math.random().toString(36).slice(2, 9);
     setActiveWorkflows(prev => [{ id, label, progress: 0, icon }, ...prev]);
@@ -312,28 +310,29 @@ export default function App() {
     workflowIntervals.current.set(id, interval);
   };
 
-  // ── Export report ──────────────────────────────────────────────────────────
   const handleExportReport = () => {
     const report = {
       generatedBy: "IBM Bob via Spark.Studio", timestamp: new Date().toISOString(),
-      repositoryStats: { totalFiles: 2450, complexityScore: "Medium (7.4)" },
+      repositoryStats: { totalFiles: githubInfo?.files.length || 2450, language: githubInfo?.language || "TypeScript" },
       roi: { devTimeReclaimed: "48h/sprint", estimatedSavings: "$14,200", riskMitigation: "86%" },
       composition: REPO_DATA, complexity: COMPLEXITY_DATA, architecture: ARCHITECTURE,
       recommendations: recommendations.slice(0, 5).map(r => r.message),
       chatHistory: chatHistory.map(m => ({ role: m.role, content: m.content })),
-      sprintPlan: sprintPlan || null, repoAnalysis: repoAnalysis || null,
-      githubInfo: githubInfo || null,
+      sprintPlan: sprintPlan || null, repoAnalysis: repoAnalysis || null, githubInfo: githubInfo || null,
     };
     const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement("a"); a.href = url; a.download = `ibm-bob-report-${Date.now()}.json`; a.click();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = `ibm-bob-report-${Date.now()}.json`; a.click();
     URL.revokeObjectURL(url);
   };
 
-  // ── Nav helper ─────────────────────────────────────────────────────────────
   const goTab = (tab: string) => { setActiveTab(tab); setMobileMenuOpen(false); };
 
-  // ── Boot screen ────────────────────────────────────────────────────────────
+  // Dynamic stats from GitHub
+  const statsFileCount = githubInfo ? githubInfo.files.length : 2450;
+  const statsLanguage = githubInfo ? githubInfo.language : "TypeScript";
+
+  // ── Boot screen ──────────────────────────────────────────────────────────────
   if (!booted) {
     return (
       <div className="min-h-screen bg-brand-black flex flex-col items-center justify-center gap-8 font-mono">
@@ -361,7 +360,7 @@ export default function App() {
     );
   }
 
-  // ── Landing ────────────────────────────────────────────────────────────────
+  // ── Landing ──────────────────────────────────────────────────────────────────
   if (showLanding) {
     return (
       <div className="min-h-screen bg-brand-black text-white flex flex-col overflow-hidden relative">
@@ -391,8 +390,25 @@ export default function App() {
               Your Repo.<br /><span className="text-brand-indigo">Your Rules.</span><br /><span className="text-brand-pink">AI as your</span> Dev Partner.
             </h1>
             <p className="text-lg md:text-xl text-white/60 font-medium max-w-2xl mx-auto leading-relaxed">
-              Spark.Studio uses IBM Bob to index your entire codebase, explain complex logic, identify bottlenecks, and automate the work that slows your team down.
+              Spark.Studio uses IBM Bob to index your entire codebase, explain complex logic, generate documentation and tests, plan sprints, and automate the work that slows your team down.
             </p>
+          </motion.div>
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }} className="grid grid-cols-2 md:grid-cols-4 gap-3 max-w-3xl w-full">
+            {[
+              { icon: <MessageSquareCode size={20} />, label: "Logic Explainer", desc: "Ask Bob anything about your code", tab: "explainer", color: "border-brand-indigo text-brand-indigo" },
+              { icon: <FileText size={20} />, label: "Doc Generator", desc: "Auto-generate full documentation", tab: "tools", color: "border-brand-teal text-brand-teal" },
+              { icon: <FlaskConical size={20} />, label: "Test Synthesizer", desc: "Generate Vitest test suites", tab: "tools", color: "border-brand-pink text-brand-pink" },
+              { icon: <Wand2 size={20} />, label: "Automation Lab", desc: "Refactor, audit, CI/CD generation", tab: "automation", color: "border-brand-yellow text-brand-yellow" },
+            ].map((f, i) => (
+              <motion.button key={i} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 + i * 0.1 }}
+                onClick={() => { setShowLanding(false); setActiveTab(f.tab); if (f.tab === "tools") setToolsMode(i === 2 ? "tests" : "docs"); }}
+                className={`bg-white/5 hover:bg-white/10 border-2 ${f.color} rounded-2xl p-4 text-left transition-all hover:-translate-y-1`}
+              >
+                <div className="mb-2">{f.icon}</div>
+                <div className="font-black text-sm uppercase text-white">{f.label}</div>
+                <div className="text-[10px] text-white/50 mt-1">{f.desc}</div>
+              </motion.button>
+            ))}
           </motion.div>
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }} className="flex flex-wrap gap-4 justify-center">
             <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} onClick={() => setShowLanding(false)}
@@ -400,10 +416,10 @@ export default function App() {
             >
               <Cpu size={24} /> Start with Bob
             </motion.button>
-            <motion.button whileHover={{ scale: 1.05 }} onClick={() => { setShowLanding(false); setActiveTab("explainer"); }}
+            <motion.button whileHover={{ scale: 1.05 }} onClick={() => { setShowLanding(false); setShowGithub(true); }}
               className="bg-transparent text-white px-10 py-5 rounded-2xl border-4 border-white/30 font-black text-lg uppercase tracking-widest flex items-center gap-3 hover:border-white transition-colors"
             >
-              <MessageSquareCode size={24} /> Try Logic Explainer
+              <Github size={24} /> Connect GitHub Repo
             </motion.button>
           </motion.div>
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.6 }} className="grid grid-cols-2 md:grid-cols-4 gap-4 max-w-3xl w-full">
@@ -422,20 +438,19 @@ export default function App() {
         </main>
         <footer className="relative z-10 h-12 px-8 border-t border-white/10 flex items-center justify-between text-[10px] font-black uppercase text-white/30 tracking-widest">
           <span>IBM Bob Hackathon 2026</span>
-          <span>Spark.Studio — Built for speed. Built with Bob.</span>
+          <span>Spark.Studio: Built for speed. Built with Bob.</span>
         </footer>
       </div>
     );
   }
 
-  // ── Dashboard ──────────────────────────────────────────────────────────────
+  // ── Dashboard ────────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen flex flex-col bg-brand-bg text-brand-black font-sans">
-
-      {/* Hidden file input */}
       <input ref={fileInputRef} type="file" accept=".ts,.tsx,.js,.jsx,.py,.go,.rs,.java,.cs,.cpp,.c,.json,.yaml,.yml,.md,.prisma,.sql" className="hidden" onChange={handleFileUpload} />
+      <input ref={toolsFileRef} type="file" accept=".ts,.tsx,.js,.jsx,.py,.go,.rs,.java,.cs,.cpp,.c,.json,.yaml,.yml,.md,.prisma,.sql" className="hidden" onChange={handleToolsFileUpload} />
 
-      {/* Code Paste Modal */}
+      {/* Code Modal */}
       <AnimatePresence>
         {showCodeInput && (
           <Modal onClose={() => setShowCodeInput(false)} title="Paste Your Code" icon={<Upload size={24} className="text-brand-indigo" />}>
@@ -448,7 +463,7 @@ export default function App() {
               >
                 <Terminal size={18} /> Analyze with Bob
               </motion.button>
-              <button onClick={() => setCodeInput("")} className="px-4 py-3 border-2 border-brand-black dark:border-white rounded-xl font-black text-sm uppercase hover:bg-brand-bg dark:hover:bg-white/10 transition-colors dark:text-white">Clear</button>
+              <button onClick={() => setCodeInput("")} className="px-4 py-3 border-2 border-brand-black dark:border-white rounded-xl font-black text-sm uppercase dark:text-white">Clear</button>
             </div>
           </Modal>
         )}
@@ -458,9 +473,8 @@ export default function App() {
       <AnimatePresence>
         {showGithub && (
           <Modal onClose={() => { setShowGithub(false); setGithubError(""); setGithubInfo(null); }} title="GitHub Connector" icon={<Github size={24} className="text-brand-indigo" />}>
-            <p className="text-sm font-bold text-brand-black/60 dark:text-white/60">Paste any public GitHub repo URL. Bob will fetch the file tree, README, and give a real architectural assessment.</p>
-            <input value={githubUrl} onChange={e => setGithubUrl(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter") handleGithubAnalyze(); }}
+            <p className="text-sm font-bold text-brand-black/60 dark:text-white/60">Paste any public GitHub repo URL. Bob will fetch the real file tree, README, and give a live architectural assessment.</p>
+            <input value={githubUrl} onChange={e => setGithubUrl(e.target.value)} onKeyDown={e => { if (e.key === "Enter") handleGithubAnalyze(); }}
               placeholder="https://github.com/owner/repo"
               className="w-full bg-brand-bg dark:bg-brand-dark-bg border-2 border-brand-black dark:border-white rounded-xl p-4 font-mono text-sm focus:outline-none focus:ring-4 focus:ring-brand-indigo/20 dark:text-white"
             />
@@ -485,11 +499,11 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* Sprint Planner Modal */}
+      {/* Sprint Modal */}
       <AnimatePresence>
         {showSprint && (
           <Modal onClose={() => setShowSprint(false)} title="Bob's Sprint Planner" icon={<ListTodo size={24} className="text-brand-pink" />} wide>
-            <p className="text-sm font-bold text-brand-black/60 dark:text-white/60">Paste your backlog, issues, or TODO list. Bob will prioritize by ROI, risk, and effort and generate an optimized sprint plan.</p>
+            <p className="text-sm font-bold text-brand-black/60 dark:text-white/60">Paste your backlog, issues, or TODO list. Bob prioritizes by ROI, risk, and effort.</p>
             {!sprintPlan ? (
               <>
                 <textarea value={sprintInput} onChange={e => setSprintInput(e.target.value)}
@@ -537,11 +551,28 @@ export default function App() {
                 </div>
                 <button onClick={() => { setSprintPlan(null); setSprintInput(""); }}
                   className="w-full py-2.5 border-2 border-brand-black dark:border-white rounded-xl font-black text-xs uppercase dark:text-white hover:bg-brand-bg dark:hover:bg-white/10 transition-colors"
-                >
-                  Plan Another Sprint
-                </button>
+                >Plan Another Sprint</button>
               </div>
             )}
+          </Modal>
+        )}
+      </AnimatePresence>
+
+      {/* Automation Result Modal */}
+      <AnimatePresence>
+        {automationResult && (
+          <Modal onClose={() => setAutomationResult(null)} title={automationResult.title} icon={<Sparkles size={24} className="text-brand-pink" />} wide>
+            <div className="flex items-center justify-between">
+              <span className="text-[9px] font-black uppercase bg-brand-teal text-brand-black px-2 py-0.5 rounded">{automationResult.tag}</span>
+              <button onClick={() => handleCopy(automationResult.output, "automation-result")}
+                className="flex items-center gap-1.5 text-[10px] font-black uppercase text-brand-indigo hover:text-brand-pink transition-colors border-b border-dashed border-brand-indigo/30"
+              >
+                {copiedId === "automation-result" ? <><Check size={12} /> Copied!</> : <><Copy size={12} /> Copy Output</>}
+              </button>
+            </div>
+            <div className="bg-brand-bg dark:bg-brand-dark-bg rounded-xl border-2 border-brand-black/10 dark:border-white/10 p-4 max-h-[60vh] overflow-y-auto">
+              <pre className="text-[11px] font-mono text-brand-black dark:text-white/80 whitespace-pre-wrap leading-relaxed">{automationResult.output}</pre>
+            </div>
           </Modal>
         )}
       </AnimatePresence>
@@ -557,30 +588,23 @@ export default function App() {
               <button onClick={() => setMobileMenuOpen(false)}><X size={24} className="dark:text-white" /></button>
             </div>
             <div className="flex flex-col gap-2">
-              {["intelligence", "automation", "explainer"].map(tab => (
-                <button key={tab} onClick={() => goTab(tab)}
-                  className={`text-left px-4 py-3 rounded-xl font-black uppercase text-sm border-2 transition-colors ${activeTab === tab ? "bg-brand-indigo text-white border-brand-indigo" : "border-brand-black dark:border-white dark:text-white hover:bg-brand-bg dark:hover:bg-white/10"}`}
-                >
-                  {tab === "explainer" ? "Logic Explainer" : tab}
-                </button>
+              {[
+                { id: "intelligence", label: "Intelligence" },
+                { id: "automation",   label: "Automation"   },
+                { id: "explainer",    label: "Logic Explainer" },
+                { id: "tools",        label: "Bob Tools"    },
+              ].map(tab => (
+                <button key={tab.id} onClick={() => goTab(tab.id)}
+                  className={`text-left px-4 py-3 rounded-xl font-black uppercase text-sm border-2 transition-colors ${activeTab === tab.id ? "bg-brand-indigo text-white border-brand-indigo" : "border-brand-black dark:border-white dark:text-white"}`}
+                >{tab.label}</button>
               ))}
             </div>
             <div className="border-t border-brand-black/10 dark:border-white/10 pt-4 flex flex-col gap-2">
-              <button onClick={() => { setShowCodeInput(true); setMobileMenuOpen(false); }} className="flex items-center gap-2 px-4 py-3 rounded-xl border-2 border-brand-black dark:border-white font-black uppercase text-sm dark:text-white hover:bg-brand-bg dark:hover:bg-white/10 transition-colors"><Upload size={16} /> Paste Code</button>
-              <button onClick={() => { fileInputRef.current?.click(); setMobileMenuOpen(false); }} className="flex items-center gap-2 px-4 py-3 rounded-xl border-2 border-brand-black dark:border-white font-black uppercase text-sm dark:text-white hover:bg-brand-bg dark:hover:bg-white/10 transition-colors"><FolderOpen size={16} /> Upload File</button>
-              <button onClick={() => { setShowGithub(true); setMobileMenuOpen(false); }} className="flex items-center gap-2 px-4 py-3 rounded-xl border-2 border-brand-black dark:border-white font-black uppercase text-sm dark:text-white hover:bg-brand-bg dark:hover:bg-white/10 transition-colors"><Github size={16} /> GitHub Repo</button>
+              <button onClick={() => { setShowCodeInput(true); setMobileMenuOpen(false); }} className="flex items-center gap-2 px-4 py-3 rounded-xl border-2 border-brand-black dark:border-white font-black uppercase text-sm dark:text-white"><Upload size={16} /> Paste Code</button>
+              <button onClick={() => { fileInputRef.current?.click(); setMobileMenuOpen(false); }} className="flex items-center gap-2 px-4 py-3 rounded-xl border-2 border-brand-black dark:border-white font-black uppercase text-sm dark:text-white"><FolderOpen size={16} /> Upload File</button>
+              <button onClick={() => { setShowGithub(true); setMobileMenuOpen(false); }} className="flex items-center gap-2 px-4 py-3 rounded-xl border-2 border-brand-black dark:border-white font-black uppercase text-sm dark:text-white"><Github size={16} /> GitHub Repo</button>
               <button onClick={() => { setShowSprint(true); setMobileMenuOpen(false); }} className="flex items-center gap-2 px-4 py-3 rounded-xl bg-brand-pink text-white border-2 border-brand-black dark:border-white font-black uppercase text-sm"><ListTodo size={16} /> Sprint Planner</button>
-              <button onClick={handleAnalyzeRepo} disabled={repoLoading} className="flex items-center gap-2 px-4 py-3 rounded-xl bg-brand-indigo text-white border-2 border-brand-black dark:border-white font-black uppercase text-sm disabled:opacity-60">
-                {repoLoading ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />} {repoLoading ? "Analyzing..." : "Analyze Repo"}
-              </button>
-              <div className="flex items-center justify-between mt-2">
-                <span className="font-black text-sm uppercase dark:text-white">Dark Mode</span>
-                <button onClick={() => setDarkMode(!darkMode)} className="w-10 h-10 bg-brand-bg dark:bg-white/10 border-2 border-brand-black dark:border-white rounded-xl flex items-center justify-center">
-                  {darkMode ? <Sun size={18} className="text-brand-yellow" /> : <Moon size={18} className="text-brand-indigo" />}
-                </button>
-              </div>
             </div>
-            <button onClick={() => setShowLanding(true)} className="mt-auto text-xs font-black uppercase text-brand-indigo/60 dark:text-brand-teal hover:text-brand-pink transition-colors flex items-center gap-1"><ChevronRight size={14} /> Back to landing</button>
           </motion.div>
         )}
       </AnimatePresence>
@@ -596,20 +620,23 @@ export default function App() {
             <span className="text-[10px] font-black text-brand-indigo dark:text-brand-teal uppercase tracking-widest">Powered by IBM Bob</span>
           </div>
         </button>
-
         <div className="hidden lg:flex items-center gap-3 font-bold text-sm uppercase tracking-widest">
-          {["intelligence", "automation", "explainer"].map(tab => (
-            <button key={tab} onClick={() => goTab(tab)} className={`capitalize transition-opacity ${activeTab === tab ? "text-brand-pink" : "opacity-40 dark:text-white hover:opacity-100"}`}>
-              {tab === "explainer" ? "Logic Explainer" : tab}
-            </button>
+          {[
+            { id: "intelligence", label: "Intelligence" },
+            { id: "automation",   label: "Automation"   },
+            { id: "explainer",    label: "Logic Explainer" },
+            { id: "tools",        label: "Bob Tools"    },
+          ].map(tab => (
+            <button key={tab.id} onClick={() => goTab(tab.id)}
+              className={`capitalize transition-opacity ${activeTab === tab.id ? "text-brand-pink" : "opacity-40 dark:text-white hover:opacity-100"}`}
+            >{tab.label}</button>
           ))}
           <div className="flex items-center gap-2 bg-brand-pink/5 dark:bg-brand-indigo/10 px-3 py-2 rounded-full border border-brand-pink/20">
             <span className="w-1.5 h-1.5 bg-brand-teal rounded-full animate-pulse" />
             <span className="text-[10px] font-black uppercase text-brand-indigo dark:text-brand-teal">Context Active</span>
             <div className="w-px h-4 bg-brand-indigo/20" />
-            <span className="text-[10px] font-black uppercase text-brand-black/40 dark:text-white/40">2,450 Nodes</span>
+            <span className="text-[10px] font-black uppercase text-brand-black/40 dark:text-white/40">{statsFileCount.toLocaleString()} {statsLanguage} Files</span>
           </div>
-          {/* Action buttons */}
           <button onClick={() => fileInputRef.current?.click()} disabled={uploadLoading}
             className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl border-2 border-brand-black dark:border-white shadow-brutal font-black text-xs uppercase hover:bg-brand-teal hover:text-brand-black dark:text-white transition-colors disabled:opacity-60"
           >
@@ -634,7 +661,6 @@ export default function App() {
             <span>{repoLoading ? "Analyzing..." : "Analyze Repo"}</span>
           </motion.button>
         </div>
-
         <button onClick={() => setMobileMenuOpen(true)} className="lg:hidden p-2 border-2 border-brand-black dark:border-white rounded-xl dark:text-white"><Menu size={24} /></button>
       </nav>
 
@@ -654,15 +680,15 @@ export default function App() {
               <span className="text-brand-indigo dark:text-brand-yellow italic underline decoration-4 underline-offset-8 decoration-brand-yellow">this repository.</span>"
             </h1>
             <p className="text-base md:text-xl font-medium text-brand-black/80 dark:text-white/90 max-w-md mb-4">
-              Your AI partner has indexed <strong>2,450 files</strong>. Ready to automate refactors, clarify logic, and generate deep docs.
+              IBM Bob has indexed <strong>{statsFileCount.toLocaleString()} {githubInfo ? githubInfo.language : ""} files</strong>. Ready to explain logic, generate docs and tests, plan sprints, and automate refactors.
             </p>
-
-            {/* Quick action chips */}
             <div className="flex flex-wrap gap-2 mb-4">
               {[
                 { label: "Upload a file", icon: <FolderOpen size={12} />, action: () => fileInputRef.current?.click() },
                 { label: "Connect GitHub repo", icon: <Github size={12} />, action: () => setShowGithub(true) },
                 { label: "Plan my sprint", icon: <ListTodo size={12} />, action: () => setShowSprint(true) },
+                { label: "Generate docs", icon: <FileText size={12} />, action: () => { goTab("tools"); setToolsMode("docs"); } },
+                { label: "Generate tests", icon: <FlaskConical size={12} />, action: () => { goTab("tools"); setToolsMode("tests"); } },
               ].map((chip, i) => (
                 <button key={i} onClick={chip.action}
                   className="flex items-center gap-1.5 bg-white/20 hover:bg-white/30 text-brand-black dark:text-white border border-white/30 px-3 py-1.5 rounded-full text-[11px] font-black uppercase transition-colors"
@@ -671,7 +697,6 @@ export default function App() {
                 </button>
               ))}
             </div>
-
             <div className="flex flex-wrap gap-3">
               <div className="bg-white/10 backdrop-blur-sm px-4 md:px-6 py-3 md:py-4 rounded-brutal border-2 border-white/20 flex flex-col">
                 <span className="text-[10px] font-black text-white/60 uppercase">Context Depth</span>
@@ -687,6 +712,7 @@ export default function App() {
                 >
                   <span className="text-[10px] font-black text-white/60 uppercase">Connected Repo</span>
                   <span className="text-xl font-black text-white">{githubInfo.name}</span>
+                  <span className="text-[10px] text-white/50">{githubInfo.stars} stars · {githubInfo.language}</span>
                 </motion.div>
               )}
               {repoAnalysis && (
@@ -708,8 +734,10 @@ export default function App() {
             )}
           </motion.div>
 
-          {/* Tab content */}
+          {/* Tab Content */}
           <AnimatePresence mode="wait">
+
+            {/* Intelligence Tab */}
             {activeTab === "intelligence" && (
               <motion.div key="intelligence" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-6">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -807,27 +835,48 @@ export default function App() {
               </motion.div>
             )}
 
+            {/* Automation Tab */}
             {activeTab === "automation" && (
               <motion.div key="automation" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-6">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <FeatureCard icon={<Zap size={24} />} title="Test Generator" subtitle="Contextual Automation" description="Instantly generate Jest/Vitest tests for the 14 uncovered modules found." color="bg-brand-pink" darkOnHover />
-                  <FeatureCard icon={<Sparkles size={24} />} title="Multi-step Work" subtitle="Complex Pipelines" description="Deploy a staging environment with mock data populated for testing." color="bg-brand-indigo" darkOnHover />
+                  <FeatureCard icon={<Zap size={24} />} title="Test Generator" subtitle="Contextual Automation" description="Instantly generate Vitest tests for uncovered modules. Bob writes them from your actual code." color="bg-brand-pink" darkOnHover />
+                  <FeatureCard icon={<Sparkles size={24} />} title="Multi-step Work" subtitle="Complex Pipelines" description="Bob chains analysis, refactoring, and testing into a single automated workflow." color="bg-brand-indigo" darkOnHover />
                 </div>
+                {automationLoading && (
+                  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="bg-white dark:bg-brand-dark-card border-brutal rounded-brutal-lg p-8 shadow-brutal flex flex-col items-center gap-4">
+                    <Loader2 size={36} className="animate-spin text-brand-pink" />
+                    <p className="font-black text-sm uppercase tracking-widest dark:text-white">Bob is working on it...</p>
+                    <p className="text-xs text-brand-black/40 dark:text-white/40 uppercase">This may take 15-30 seconds</p>
+                  </motion.div>
+                )}
                 <div className="bg-white dark:bg-brand-dark-card border-brutal rounded-brutal-lg p-6 md:p-8 shadow-brutal flex flex-col gap-6">
                   <div className="flex items-center justify-between">
                     <h3 className="text-2xl font-black italic flex items-center gap-3 dark:text-white"><Wand2 className="text-brand-pink" size={28} /> Automation Lab</h3>
-                    <button className="bg-brand-black dark:bg-white dark:text-brand-black text-white px-4 py-2 rounded-full text-xs font-black uppercase hover:scale-105 transition-transform">New Strategy</button>
+                    <span className="text-[10px] font-black text-brand-indigo/60 dark:text-brand-teal uppercase">Real AI Output</span>
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <ActionItem icon={<FileCode2 size={20} />} title="Generate Docs"   desc="Create README for all submodules"  tag="Documentation" onClick={() => launchWorkflow("Generating Docs",    <FileCode2   size={16} />)} />
-                    <ActionItem icon={<ShieldCheck size={20} />} title="Security Patch" desc="Update vulnerable dependencies"    tag="Safety"        onClick={() => launchWorkflow("Security Patching",  <ShieldCheck size={16} />)} />
-                    <ActionItem icon={<GitBranch size={20} />} title="Refactor Props"   desc="Convert interfaces to types"       tag="Refactoring"   onClick={() => launchWorkflow("Refactoring Types",  <GitBranch   size={16} />)} />
-                    <ActionItem icon={<Settings size={20} />} title="CI/CD Config"      desc="Generate GitHub Action workflows"  tag="DevOps"        onClick={() => launchWorkflow("Configuring CI/CD", <Settings    size={16} />)} />
+                    <ActionItem icon={<FileCode2 size={20} />} title="Generate README" desc="Bob writes a production-quality README from your codebase" tag="Documentation" loading={automationLoading === "docs"}
+                      onClick={() => handleAutomation("docs", "Generating README", <FileCode2 size={16} />)} />
+                    <ActionItem icon={<Shield size={20} />} title="Security Audit" desc="Bob identifies vulnerabilities and provides specific fixes" tag="Security" loading={automationLoading === "security"}
+                      onClick={() => handleAutomation("security", "Security Audit", <Shield size={16} />)} />
+                    <ActionItem icon={<GitBranch size={20} />} title="Refactor Plan" desc="Before/after code examples for top 3 refactoring targets" tag="Refactoring" loading={automationLoading === "refactor"}
+                      onClick={() => handleAutomation("refactor", "Refactoring Plan", <GitBranch size={16} />)} />
+                    <ActionItem icon={<Settings size={20} />} title="CI/CD Workflows" desc="Complete GitHub Actions YAML: CI, deploy, and PR checks" tag="DevOps" loading={automationLoading === "cicd"}
+                      onClick={() => handleAutomation("cicd", "Configuring CI/CD", <Settings size={16} />)} />
                   </div>
+                  {!githubInfo && (
+                    <div className="flex items-center gap-3 p-3 bg-brand-yellow/10 border border-brand-yellow/30 rounded-xl">
+                      <AlertTriangle size={16} className="text-brand-yellow shrink-0" />
+                      <p className="text-[11px] font-bold dark:text-white/80">
+                        <span className="text-brand-yellow font-black">Tip:</span> Connect a real GitHub repo above for context-aware automation results.
+                      </p>
+                    </div>
+                  )}
                 </div>
               </motion.div>
             )}
 
+            {/* Logic Explainer Tab */}
             {activeTab === "explainer" && (
               <motion.div key="explainer" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}
                 className="bg-white dark:bg-brand-dark-card border-brutal rounded-brutal-lg p-6 md:p-8 shadow-brutal flex flex-col gap-5"
@@ -845,8 +894,6 @@ export default function App() {
                     </div>
                   </div>
                 </div>
-
-                {/* Chat */}
                 <div className="flex flex-col gap-4 max-h-[460px] overflow-y-auto pr-1">
                   {chatHistory.length === 0 && !loading && (
                     <div className="bg-brand-bg dark:bg-brand-dark-bg rounded-brutal p-6 border-2 border-dashed border-brand-black/20 dark:border-white/20 font-mono text-sm">
@@ -864,12 +911,17 @@ export default function App() {
                             <div className="bg-brand-pink text-white px-4 py-3 rounded-2xl rounded-tr-sm font-bold text-sm">{msg.content}</div>
                           ) : (
                             <div className="bg-brand-bg dark:bg-brand-dark-bg border-2 border-dashed border-brand-black/20 dark:border-white/20 rounded-2xl rounded-tl-sm p-4 font-mono text-sm space-y-3 w-full">
-                              {(msg.category || msg.impact) && (
+                              <div className="flex items-center justify-between flex-wrap gap-2">
                                 <div className="flex gap-2 flex-wrap">
                                   {msg.category && <span className="bg-brand-indigo/10 text-brand-indigo dark:text-brand-teal text-[9px] font-black uppercase px-2 py-1 rounded border border-brand-indigo/20">{msg.category}</span>}
                                   {msg.impact && <span className="bg-brand-teal text-brand-black text-[9px] font-black uppercase px-2 py-1 rounded border border-brand-black">{msg.impact}</span>}
                                 </div>
-                              )}
+                                {!msg.streaming && msg.content && (
+                                  <button onClick={() => handleCopy(msg.content, msg.id)} className="text-[9px] font-black uppercase text-brand-black/30 dark:text-white/30 hover:text-brand-indigo dark:hover:text-brand-teal transition-colors flex items-center gap-1">
+                                    {copiedId === msg.id ? <><Check size={10} /> Copied!</> : <><Copy size={10} /> Copy</>}
+                                  </button>
+                                )}
+                              </div>
                               <p className="leading-relaxed text-brand-black dark:text-white/80 font-medium text-[13px]">
                                 "{msg.content}"
                                 {msg.streaming && <span className="inline-block w-1.5 h-3 bg-brand-indigo dark:bg-brand-teal ml-1 animate-pulse rounded-sm" />}
@@ -909,7 +961,6 @@ export default function App() {
                   )}
                   <div ref={chatEndRef} />
                 </div>
-
                 <div className="relative">
                   <input type="text" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === "Enter") handleAskBob(); }}
                     placeholder="Ask Bob about any module, logic, or transformation..."
@@ -922,12 +973,110 @@ export default function App() {
                   </button>
                 </div>
                 <div className="flex flex-wrap gap-3">
-                  {["Explain auth flow", "Find performance bottlenecks", "Map external APIs", "Review API client resilience"].map((q, i) => (
+                  {["Explain auth flow", "Find performance bottlenecks", "Map external APIs", "Review API client resilience", "Explain the data layer"].map((q, i) => (
                     <button key={i} onClick={() => handleAskBob(q)} className="text-[10px] font-black uppercase text-brand-indigo/60 hover:text-brand-pink transition-colors border-b border-dashed border-brand-indigo/20 hover:border-brand-pink">{q}</button>
                   ))}
                 </div>
               </motion.div>
             )}
+
+            {/* Bob Tools Tab */}
+            {activeTab === "tools" && (
+              <motion.div key="tools" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-6">
+                <div className="bg-white dark:bg-brand-dark-card border-brutal rounded-brutal-lg p-6 md:p-8 shadow-brutal flex flex-col gap-6">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <h3 className="text-2xl font-black italic flex items-center gap-3 dark:text-white"><Sparkles className="text-brand-pink" size={28} /> Bob Tools</h3>
+                    <div className="flex items-center gap-2 text-[10px] font-black text-brand-indigo/60 dark:text-brand-teal uppercase">
+                      <div className="w-2 h-2 bg-brand-teal rounded-full animate-pulse" /> Bob Ready
+                    </div>
+                  </div>
+
+                  {/* Mode toggle */}
+                  <div className="flex gap-3">
+                    <button onClick={() => { setToolsMode("docs"); setToolsOutput(""); }}
+                      className={`flex-1 py-3 rounded-xl border-2 font-black uppercase text-sm flex items-center justify-center gap-2 transition-colors ${toolsMode === "docs" ? "bg-brand-indigo text-white border-brand-indigo" : "border-brand-black dark:border-white dark:text-white hover:bg-brand-bg dark:hover:bg-white/5"}`}
+                    >
+                      <FileText size={16} /> Doc Generator
+                    </button>
+                    <button onClick={() => { setToolsMode("tests"); setToolsOutput(""); }}
+                      className={`flex-1 py-3 rounded-xl border-2 font-black uppercase text-sm flex items-center justify-center gap-2 transition-colors ${toolsMode === "tests" ? "bg-brand-pink text-white border-brand-pink" : "border-brand-black dark:border-white dark:text-white hover:bg-brand-bg dark:hover:bg-white/5"}`}
+                    >
+                      <FlaskConical size={16} /> Test Synthesizer
+                    </button>
+                  </div>
+
+                  {/* File upload area */}
+                  <div
+                    onClick={() => toolsFileRef.current?.click()}
+                    className={`border-4 border-dashed rounded-2xl p-8 text-center cursor-pointer transition-all ${toolsFile ? "border-brand-teal bg-brand-teal/5" : "border-brand-black/20 dark:border-white/20 hover:border-brand-indigo"}`}
+                  >
+                    {toolsFile ? (
+                      <div className="flex flex-col items-center gap-2">
+                        <FileCode2 size={32} className="text-brand-teal" />
+                        <p className="font-black text-brand-teal">{toolsFile.name}</p>
+                        <p className="text-[10px] text-brand-black/40 dark:text-white/40 uppercase">{toolsFile.content.length.toLocaleString()} characters loaded</p>
+                        <button onClick={e => { e.stopPropagation(); setToolsFile(null); setToolsOutput(""); }} className="text-[10px] font-black uppercase text-brand-pink hover:underline">Remove</button>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center gap-3">
+                        <FolderOpen size={32} className="text-brand-black/30 dark:text-white/30" />
+                        <p className="font-black text-sm dark:text-white">Click to upload a file</p>
+                        <p className="text-[10px] text-brand-black/40 dark:text-white/40 uppercase">TS, JS, Python, Go, Rust, Java, SQL, and more</p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Or paste code */}
+                  {!toolsFile && (
+                    <div className="flex items-center gap-3">
+                      <div className="flex-1 h-px bg-brand-black/10 dark:bg-white/10" />
+                      <span className="text-[10px] font-black uppercase text-brand-black/30 dark:text-white/30">or paste code directly</span>
+                      <div className="flex-1 h-px bg-brand-black/10 dark:bg-white/10" />
+                    </div>
+                  )}
+                  {!toolsFile && (
+                    <textarea
+                      placeholder="// Paste your code here and Bob will generate docs or tests for it..."
+                      className="w-full h-36 bg-brand-bg dark:bg-brand-dark-bg border-2 border-brand-black dark:border-white rounded-xl p-4 font-mono text-sm resize-none focus:outline-none focus:ring-4 focus:ring-brand-indigo/20 dark:text-white"
+                      onChange={e => { if (e.target.value) setToolsFile({ name: "pasted-code.ts", content: e.target.value }); }}
+                    />
+                  )}
+
+                  <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={handleRunTool} disabled={!toolsFile || toolsLoading}
+                    className={`w-full py-4 rounded-xl border-2 border-brand-black dark:border-white shadow-brutal font-black uppercase text-sm flex items-center justify-center gap-3 disabled:opacity-50 transition-colors ${toolsMode === "docs" ? "bg-brand-indigo text-white hover:bg-brand-teal hover:text-brand-black" : "bg-brand-pink text-white hover:bg-brand-indigo"}`}
+                  >
+                    {toolsLoading ? (
+                      <><Loader2 size={20} className="animate-spin" /> Bob is {toolsMode === "docs" ? "writing docs" : "synthesizing tests"}...</>
+                    ) : (
+                      <><Sparkles size={20} /> {toolsMode === "docs" ? "Generate Documentation" : "Generate Test Suite"} with Bob</>
+                    )}
+                  </motion.button>
+
+                  {/* Output */}
+                  <AnimatePresence>
+                    {toolsOutput && (
+                      <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="flex flex-col gap-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 rounded-full bg-brand-teal animate-pulse" />
+                            <span className="text-[10px] font-black uppercase text-brand-teal">Bob Output Ready</span>
+                          </div>
+                          <button onClick={() => handleCopy(toolsOutput, "tools-output")}
+                            className="flex items-center gap-1.5 text-[10px] font-black uppercase text-brand-indigo hover:text-brand-pink transition-colors border-b border-dashed border-brand-indigo/30"
+                          >
+                            {copiedId === "tools-output" ? <><Check size={12} /> Copied!</> : <><Copy size={12} /> Copy Output</>}
+                          </button>
+                        </div>
+                        <div className={`bg-brand-bg dark:bg-brand-dark-bg rounded-2xl border-2 p-6 max-h-[500px] overflow-y-auto ${toolsMode === "docs" ? "border-brand-indigo/30" : "border-brand-pink/30"}`}>
+                          <pre className="text-[11px] font-mono leading-relaxed whitespace-pre-wrap dark:text-white/80">{toolsOutput}</pre>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              </motion.div>
+            )}
+
           </AnimatePresence>
         </div>
 
@@ -990,13 +1139,18 @@ export default function App() {
               </div>
             </div>
           </div>
-          <motion.div whileHover={{ scale: 1.02 }} onClick={() => setActiveTab("explainer")}
+          <motion.div whileHover={{ scale: 1.02 }} onClick={() => setActiveTab("tools")}
             className="bg-brand-indigo p-6 md:p-8 rounded-brutal border-brutal shadow-brutal text-white flex flex-col gap-4 overflow-hidden relative cursor-pointer"
           >
             <div className="absolute top-0 right-0 p-4 opacity-20"><Sparkles size={64} /></div>
             <h4 className="text-2xl font-black italic">Turn idea<br />into impact.</h4>
-            <p className="text-xs font-bold text-white/70 uppercase tracking-widest leading-relaxed">Use Bob to automate the tasks that slow you down.</p>
-            <button className="bg-white text-brand-indigo px-4 py-2 rounded-full font-black text-xs uppercase self-start hover:bg-brand-yellow hover:text-brand-black transition-colors">Start with Bob</button>
+            <p className="text-xs font-bold text-white/70 uppercase tracking-widest leading-relaxed">Generate docs, tests, and CI/CD with one click.</p>
+            <div className="flex gap-2 flex-wrap">
+              <span className="bg-white/10 text-white text-[9px] font-black uppercase px-2 py-1 rounded border border-white/20">Doc Generator</span>
+              <span className="bg-white/10 text-white text-[9px] font-black uppercase px-2 py-1 rounded border border-white/20">Test Synthesizer</span>
+              <span className="bg-white/10 text-white text-[9px] font-black uppercase px-2 py-1 rounded border border-white/20">CI/CD Config</span>
+            </div>
+            <button className="bg-white text-brand-indigo px-4 py-2 rounded-full font-black text-xs uppercase self-start hover:bg-brand-yellow hover:text-brand-black transition-colors">Open Bob Tools</button>
           </motion.div>
         </aside>
       </main>
@@ -1007,7 +1161,7 @@ export default function App() {
           <span className="text-brand-teal flex items-center gap-1"><span className="w-1.5 h-1.5 bg-brand-teal rounded-full animate-ping" /> Sync: Stable</span>
         </div>
         <div className="hidden sm:flex gap-8">
-          <span className="opacity-60">Memory: 4.2GB</span>
+          <span className="opacity-60">{statsFileCount.toLocaleString()} Files Indexed</span>
           <span className="opacity-60">Repo Identity: Verified</span>
         </div>
       </footer>
@@ -1015,7 +1169,6 @@ export default function App() {
   );
 }
 
-// ─── Shared components ────────────────────────────────────────────────────────
 function Modal({ onClose, title, icon, children, wide }: { onClose: () => void; title: string; icon: ReactNode; children: ReactNode; wide?: boolean; }) {
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
@@ -1073,14 +1226,18 @@ function RecommendationItem({ message, time, onFix }: { message: string; time: s
     </div>
   );
 }
-function ActionItem({ icon, title, desc, tag, onClick }: { icon: ReactNode; title: string; desc: string; tag: string; onClick: () => void; }) {
+function ActionItem({ icon, title, desc, tag, onClick, loading }: { icon: ReactNode; title: string; desc: string; tag: string; onClick: () => void; loading?: boolean; }) {
   return (
-    <motion.div whileHover={{ scale: 1.02 }} onClick={onClick} className="p-4 bg-brand-bg dark:bg-brand-black/40 rounded-brutal border-2 border-brand-black dark:border-white/40 group cursor-pointer hover:bg-white dark:hover:bg-brand-indigo/20 transition-colors">
+    <motion.div whileHover={{ scale: loading ? 1 : 1.02 }} onClick={loading ? undefined : onClick}
+      className={`p-4 bg-brand-bg dark:bg-brand-black/40 rounded-brutal border-2 border-brand-black dark:border-white/40 group transition-colors ${loading ? "opacity-60 cursor-not-allowed" : "cursor-pointer hover:bg-white dark:hover:bg-brand-indigo/20"}`}
+    >
       <div className="flex items-center justify-between mb-2">
-        <div className="p-2 bg-white dark:bg-brand-dark-bg rounded-lg border border-brand-black dark:border-white/20 group-hover:bg-brand-indigo group-hover:text-white transition-colors">{icon}</div>
+        <div className={`p-2 bg-white dark:bg-brand-dark-bg rounded-lg border border-brand-black dark:border-white/20 transition-colors ${!loading ? "group-hover:bg-brand-indigo group-hover:text-white" : ""}`}>
+          {loading ? <Loader2 size={20} className="animate-spin text-brand-pink" /> : icon}
+        </div>
         <span className="text-[8px] font-black uppercase bg-brand-teal text-brand-black px-2 py-0.5 rounded-full border border-brand-black dark:border-white/20">{tag}</span>
       </div>
-      <h4 className="text-sm font-black mb-1 dark:text-white">{title}</h4>
+      <h4 className="text-sm font-black mb-1 dark:text-white">{loading ? "Bob is working..." : title}</h4>
       <p className="text-[11px] font-bold opacity-60 dark:opacity-50 leading-tight dark:text-white/70">{desc}</p>
     </motion.div>
   );
