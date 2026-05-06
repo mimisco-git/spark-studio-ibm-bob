@@ -5,14 +5,18 @@ import {
   Layers, Wand2, FileCode2, GitBranch, Settings, Sun, Moon, Download,
   AlertTriangle, CheckCircle2, TrendingUp, ArrowRight, X, Menu, Upload,
   Terminal, ChevronRight, Github, ListTodo, FolderOpen, Copy, Check,
-  FlaskConical, Shield, FileText,
+  FlaskConical, Shield, FileText, GitPullRequest, UserCheck, Gauge,
+  RotateCcw, Play, Eye,
 } from "lucide-react";
 import { useState, useEffect, ReactNode, useCallback, useRef } from "react";
 import {
   askBobStream, analyzeBobRepo, analyzeFile, generateSprintPlan,
   fetchGitHubRepo, analyzeGitHubRepo, generateDocumentation, generateTests,
   automateGenerateDocs, automateSecurityAudit, automateRefactor, automateCICD,
+  generatePRDescription, generateOnboarding, reviewCode, generateHealthScore,
   BobInsight, BobRepoAnalysis, SprintPlan, GitHubRepoInfo, AutomationResult,
+  PRDescription, OnboardingGuide, CodeReviewResult, HealthScore,
+  DEMO_CHAT, DEMO_REPO, DEMO_HEALTH,
 } from "./services/bobService";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, BarChart, Bar, XAxis, YAxis } from "recharts";
 
@@ -106,6 +110,31 @@ export default function App() {
   const [toolsMode,       setToolsMode]       = useState<"docs" | "tests">("docs");
   const [toolsOutput,     setToolsOutput]     = useState("");
   const [toolsLoading,    setToolsLoading]    = useState(false);
+
+  // Demo mode
+  const [demoMode,        setDemoMode]        = useState(false);
+
+  // PR Description
+  const [showPR,          setShowPR]          = useState(false);
+  const [prInput,         setPrInput]         = useState("");
+  const [prLoading,       setPrLoading]       = useState(false);
+  const [prResult,        setPrResult]        = useState<PRDescription | null>(null);
+
+  // Onboarding tab
+  const [onboardingCtx,      setOnboardingCtx]      = useState("");
+  const [onboardingLoading,  setOnboardingLoading]  = useState(false);
+  const [onboardingGuide,    setOnboardingGuide]    = useState<OnboardingGuide | null>(null);
+
+  // Code Review (inside explainer tab)
+  const [exMode,          setExMode]          = useState<"chat" | "review">("chat");
+  const [reviewInput,     setReviewInput]     = useState("");
+  const [reviewLoading,   setReviewLoading]   = useState(false);
+  const [reviewResult,    setReviewResult]    = useState<CodeReviewResult | null>(null);
+
+  // Health Score (sidebar)
+  const [health,          setHealth]          = useState<HealthScore | null>(null);
+  const [healthLoading,   setHealthLoading]   = useState(false);
+  const [healthFetched,   setHealthFetched]   = useState(false);
   const toolsFileRef = useRef<HTMLInputElement>(null);
 
   // Automation results
@@ -175,6 +204,11 @@ export default function App() {
     setQuery("");
     setLoading(true);
     const context = codeCtx ? `User-provided code:\n${codeCtx}` : selectedFile ? `File context: ${selectedFile}` : undefined;
+    if (demoMode) {
+      await new Promise(r => setTimeout(r, 900));
+      setChatHistory(prev => prev.map(m => m.id === bobId ? { ...m, ...DEMO_CHAT, streaming: false } : m));
+      setLoading(false); return;
+    }
     const result = await askBobStream(q, (streamedText) => {
       setChatHistory(prev => prev.map(m => m.id === bobId ? { ...m, content: streamedText } : m));
     }, context);
@@ -275,6 +309,7 @@ export default function App() {
 
   const handleAnalyzeRepo = async () => {
     setRepoLoading(true);
+    if (demoMode) { await new Promise(r=>setTimeout(r,900)); setRepoAnalysis(DEMO_REPO); setRepoLoading(false); return; }
     const result = await analyzeBobRepo();
     setRepoAnalysis(result);
     setRepoLoading(false);
@@ -308,6 +343,43 @@ export default function App() {
       }));
     }, 900);
     workflowIntervals.current.set(id, interval);
+  };
+
+  const handlePR = async () => {
+    if (!prInput.trim()) return;
+    setPrLoading(true);
+    const r = await generatePRDescription(prInput);
+    setPrResult(r); setPrLoading(false);
+  };
+
+  const handleOnboarding = async () => {
+    setOnboardingLoading(true);
+    const ctx = githubInfo
+      ? `Repo: ${githubInfo.name}
+Language: ${githubInfo.language}
+Files: ${githubInfo.files.slice(0,30).join(", ")}`
+      : onboardingCtx || "TypeScript React app, Express, JWT, Redis, Prisma, 2,450 files";
+    const guide = await generateOnboarding(ctx);
+    setOnboardingGuide(guide); setOnboardingLoading(false);
+  };
+
+  const handleCodeReview = async () => {
+    if (!reviewInput.trim()) return;
+    setReviewLoading(true);
+    const result = await reviewCode(reviewInput);
+    setReviewResult(result); setReviewLoading(false);
+  };
+
+  const handleHealthScore = async () => {
+    if (healthFetched) return;
+    setHealthLoading(true);
+    const ctx = githubInfo
+      ? `Repo: ${githubInfo.name}
+Language: ${githubInfo.language}`
+      : "TypeScript React app, 2,450 files, 18% test coverage";
+    if (demoMode) { await new Promise(r=>setTimeout(r,800)); setHealth(DEMO_HEALTH); setHealthLoading(false); setHealthFetched(true); return; }
+    const s = await generateHealthScore(ctx);
+    setHealth(s); setHealthLoading(false); setHealthFetched(true);
   };
 
   const handleExportReport = () => {
@@ -380,7 +452,23 @@ export default function App() {
             </motion.button>
           </div>
         </nav>
-        <main className="relative z-10 flex-1 flex flex-col items-center justify-center px-6 text-center gap-10 py-20">
+        {/* Demo Banner */}
+      <AnimatePresence>
+        {demoMode && (
+          <motion.div initial={{height:0,opacity:0}} animate={{height:"auto",opacity:1}} exit={{height:0,opacity:0}}
+            className="bg-brand-yellow/10 border-b-2 border-brand-yellow/30 px-6 py-2 flex items-center justify-between gap-4"
+          >
+            <div className="flex items-center gap-2.5">
+              <Play size={12} className="text-brand-yellow shrink-0"/>
+              <span className="text-xs font-black uppercase tracking-widest text-brand-yellow">Demo Mode Active</span>
+              <span className="text-xs font-medium text-brand-black/50 dark:text-white/50 hidden sm:block">Pre-built responses — no API key needed. Add yours in Vercel to go live.</span>
+            </div>
+            <button onClick={() => setDemoMode(false)} className="text-brand-black/40 dark:text-white/40 hover:text-brand-black dark:hover:text-white transition-colors"><X size={14}/></button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <main className="relative z-10 flex-1 flex flex-col items-center justify-center px-6 text-center gap-10 py-20">
           <motion.div initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} className="space-y-6 max-w-4xl">
             <div className="inline-flex items-center gap-2 bg-brand-teal/10 border border-brand-teal/30 px-4 py-2 rounded-full">
               <span className="w-2 h-2 bg-brand-teal rounded-full animate-pulse" />
@@ -558,6 +646,45 @@ export default function App() {
         )}
       </AnimatePresence>
 
+      {/* PR Description Modal */}
+      <AnimatePresence>
+        {showPR && (
+          <Modal onClose={() => { setShowPR(false); setPrResult(null); setPrInput(""); }} title="PR Description Generator" icon={<GitPullRequest size={20} className="text-brand-indigo" />} wide>
+            {!prResult ? <>
+              <p className="text-sm font-medium text-brand-black/60 dark:text-white/50">Describe your changes. Bob writes a professional PR with conventional commit title, changelog, and review notes.</p>
+              <textarea value={prInput} onChange={e=>setPrInput(e.target.value)} rows={6}
+                placeholder="What did you change and why? e.g. Added Redis denylist to authService.ts, updated /auth/logout to revoke tokens, added 4 unit tests"
+                className="w-full bg-brand-bg dark:bg-brand-dark-bg border-2 border-brand-black dark:border-white rounded-xl px-4 py-3 font-mono text-sm resize-none focus:outline-none dark:text-white"
+              />
+              <motion.button whileHover={{scale:1.02}} onClick={handlePR} disabled={prLoading||!prInput.trim()}
+                className="w-full py-3.5 bg-brand-indigo text-white rounded-xl border-2 border-brand-black dark:border-white font-black uppercase text-sm flex items-center justify-center gap-2 disabled:opacity-50 shadow-brutal hover:shadow-none hover:translate-x-[4px] hover:translate-y-[4px] transition-all hover:bg-brand-pink"
+              >
+                {prLoading?<><Loader2 size={16} className="animate-spin"/>Writing PR...</>:<><GitPullRequest size={16}/>Generate PR Description</>}
+              </motion.button>
+            </> : <div className="space-y-4 max-h-[55vh] overflow-y-auto">
+              <div className="flex items-center gap-3 p-3 bg-brand-bg dark:bg-brand-dark-bg border-2 border-brand-black/10 dark:border-white/10 rounded-xl">
+                <span className={`text-[9px] font-black uppercase px-2 py-1 rounded-full ${prResult.type==="fix"?"bg-brand-pink/10 text-brand-pink":prResult.type==="feat"?"bg-brand-teal/10 text-brand-teal":"bg-brand-indigo/10 text-brand-indigo"}`}>{prResult.type}</span>
+                <span className="font-black text-xs dark:text-white flex-1">{prResult.title}</span>
+                <button onClick={()=>handleCopy(prResult.title,"pr-t")} className="text-brand-black/30 hover:text-brand-indigo dark:text-white/30 transition-colors">
+                  {copiedId==="pr-t"?<Check size={13} className="text-brand-teal"/>:<Copy size={13}/>}
+                </button>
+              </div>
+              <div><p className="text-[10px] font-black uppercase tracking-widest text-brand-black/40 dark:text-white/40 mb-2">Summary</p><p className="text-sm dark:text-white/80 leading-relaxed">{prResult.summary}</p></div>
+              <div><p className="text-[10px] font-black uppercase tracking-widest text-brand-black/40 dark:text-white/40 mb-2">Changes</p>
+                {prResult.changes.map((c,i)=><div key={i} className="flex items-start gap-2 mb-1.5"><CheckCircle2 size={12} className="text-brand-teal mt-0.5 shrink-0"/><span className="text-xs dark:text-white/80">{c}</span></div>)}
+              </div>
+              <div><p className="text-[10px] font-black uppercase tracking-widest text-brand-black/40 dark:text-white/40 mb-2">Testing Notes</p><p className="text-xs font-mono bg-brand-bg dark:bg-brand-dark-bg rounded-lg p-3 dark:text-white/70">{prResult.testingNotes}</p></div>
+              <div className="flex gap-3">
+                <button onClick={()=>{const txt=[prResult.title,"",prResult.summary,"","## Changes",...prResult.changes.map((c:string)=>`- ${c}`),"","## Testing",prResult.testingNotes].join("\n");handleCopy(txt,"pr-f");}}
+                  className="flex-1 bg-brand-indigo text-white py-2.5 rounded-xl border-2 border-brand-black dark:border-white font-black text-xs uppercase flex items-center justify-center gap-2 hover:bg-brand-pink transition-colors"
+                >{copiedId==="pr-f"?<><Check size={12}/>Copied!</>:<><Copy size={12}/>Copy Full PR</>}</button>
+                <button onClick={()=>{setPrResult(null);setPrInput("");}} className="px-4 py-2.5 border-2 border-brand-black/20 dark:border-white/20 rounded-xl font-black text-xs uppercase dark:text-white hover:border-brand-black dark:hover:border-white transition-all">Again</button>
+              </div>
+            </div>}
+          </Modal>
+        )}
+      </AnimatePresence>
+
       {/* Automation Result Modal */}
       <AnimatePresence>
         {automationResult && (
@@ -593,6 +720,7 @@ export default function App() {
                 { id: "automation",   label: "Automation"   },
                 { id: "explainer",    label: "Logic Explainer" },
                 { id: "tools",        label: "Bob Tools"    },
+                { id: "onboarding",   label: "Onboarding"   },
               ].map(tab => (
                 <button key={tab.id} onClick={() => goTab(tab.id)}
                   className={`text-left px-4 py-3 rounded-xl font-black uppercase text-sm border-2 transition-colors ${activeTab === tab.id ? "bg-brand-indigo text-white border-brand-indigo" : "border-brand-black dark:border-white dark:text-white"}`}
@@ -626,6 +754,7 @@ export default function App() {
             { id: "automation",   label: "Automation"   },
             { id: "explainer",    label: "Logic Explainer" },
             { id: "tools",        label: "Bob Tools"    },
+            { id: "onboarding",   label: "Onboarding"   },
           ].map(tab => (
             <button key={tab.id} onClick={() => goTab(tab.id)}
               className={`capitalize transition-opacity ${activeTab === tab.id ? "text-brand-pink" : "opacity-40 dark:text-white hover:opacity-100"}`}
@@ -650,6 +779,15 @@ export default function App() {
           </button>
           <button onClick={() => setShowSprint(true)} className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl bg-brand-pink text-white border-2 border-brand-black dark:border-white shadow-brutal font-black text-xs uppercase hover:bg-brand-indigo transition-colors">
             <ListTodo size={14} /> Sprint
+          </button>
+          <button onClick={() => setShowPR(true)} className="hidden md:flex items-center gap-1.5 px-3 py-2.5 rounded-xl border-2 border-brand-black dark:border-white shadow-brutal font-black text-xs uppercase dark:text-white hover:bg-brand-indigo hover:text-white transition-colors">
+            <GitPullRequest size={14} /> PR
+          </button>
+          <button
+            onClick={() => setDemoMode(d => !d)}
+            className={`hidden md:flex items-center gap-1.5 px-3 py-2.5 rounded-xl border-2 shadow-brutal font-black text-xs uppercase transition-all ${demoMode ? "bg-brand-yellow text-brand-black border-brand-black" : "border-brand-black dark:border-white dark:text-white hover:bg-brand-yellow hover:text-brand-black hover:border-brand-black"}`}
+          >
+            <Play size={14} /> Demo
           </button>
           <button onClick={() => setDarkMode(!darkMode)} className="w-10 h-10 bg-white dark:bg-brand-dark-card border-2 border-brand-black dark:border-white rounded-xl shadow-brutal flex items-center justify-center">
             {darkMode ? <Sun size={18} className="text-brand-yellow" /> : <Moon size={18} className="text-brand-indigo" />}
@@ -884,11 +1022,18 @@ export default function App() {
                 <div className="flex items-center justify-between flex-wrap gap-2">
                   <h3 className="text-2xl font-black italic flex items-center gap-3 dark:text-white"><MessageSquareCode className="text-brand-indigo" size={28} /> Bob's Logic Explainer</h3>
                   <div className="flex items-center gap-2 flex-wrap">
-                    <button onClick={() => setShowCodeInput(true)} className="flex items-center gap-1.5 px-3 py-2 border-2 border-brand-black dark:border-white rounded-lg font-black text-[10px] uppercase hover:bg-brand-indigo hover:text-white dark:text-white transition-colors"><Upload size={12} /> Paste Code</button>
-                    <button onClick={() => fileInputRef.current?.click()} className="flex items-center gap-1.5 px-3 py-2 border-2 border-brand-black dark:border-white rounded-lg font-black text-[10px] uppercase hover:bg-brand-teal hover:text-brand-black dark:text-white transition-colors"><FolderOpen size={12} /> Upload File</button>
-                    {chatHistory.length > 0 && (
-                      <button onClick={() => setChatHistory([])} className="flex items-center gap-1.5 px-3 py-2 border-2 border-brand-black/30 dark:border-white/30 rounded-lg font-black text-[10px] uppercase hover:border-brand-pink hover:text-brand-pink dark:text-white/60 transition-colors"><X size={12} /> Clear</button>
-                    )}
+                    {/* Chat / Review toggle */}
+                    <div className="flex bg-brand-bg dark:bg-brand-dark-bg border-2 border-brand-black dark:border-white rounded-xl p-0.5">
+                      <button onClick={() => setExMode("chat")} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-black text-[10px] uppercase transition-all ${exMode==="chat"?"bg-brand-indigo text-white":"dark:text-white hover:bg-brand-bg dark:hover:bg-white/10"}`}><MessageSquareCode size={11}/> Chat</button>
+                      <button onClick={() => setExMode("review")} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-black text-[10px] uppercase transition-all ${exMode==="review"?"bg-brand-pink text-white":"dark:text-white hover:bg-brand-bg dark:hover:bg-white/10"}`}><Eye size={11}/> Code Review</button>
+                    </div>
+                    {exMode === "chat" && <>
+                      <button onClick={() => setShowCodeInput(true)} className="flex items-center gap-1.5 px-3 py-2 border-2 border-brand-black dark:border-white rounded-lg font-black text-[10px] uppercase hover:bg-brand-indigo hover:text-white dark:text-white transition-colors"><Upload size={12} /> Paste Code</button>
+                      <button onClick={() => fileInputRef.current?.click()} className="flex items-center gap-1.5 px-3 py-2 border-2 border-brand-black dark:border-white rounded-lg font-black text-[10px] uppercase hover:bg-brand-teal hover:text-brand-black dark:text-white transition-colors"><FolderOpen size={12} /> Upload File</button>
+                      {chatHistory.length > 0 && (
+                        <button onClick={() => setChatHistory([])} className="flex items-center gap-1.5 px-3 py-2 border-2 border-brand-black/30 dark:border-white/30 rounded-lg font-black text-[10px] uppercase hover:border-brand-pink hover:text-brand-pink dark:text-white/60 transition-colors"><X size={12} /> Clear</button>
+                      )}
+                    </>}
                     <div className="flex items-center gap-2 text-[10px] font-black text-brand-indigo/60 dark:text-brand-teal uppercase">
                       <div className="w-2 h-2 bg-brand-teal rounded-full animate-pulse" /> Repo Context: Active
                     </div>
@@ -961,22 +1106,69 @@ export default function App() {
                   )}
                   <div ref={chatEndRef} />
                 </div>
-                <div className="relative">
-                  <input type="text" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === "Enter") handleAskBob(); }}
-                    placeholder="Ask Bob about any module, logic, or transformation..."
-                    className="w-full bg-brand-bg dark:bg-brand-dark-bg p-4 pr-14 rounded-full border-2 border-brand-black dark:border-white font-bold focus:outline-none focus:ring-4 focus:ring-brand-pink/20 dark:text-white"
-                  />
-                  <button onClick={() => handleAskBob()} disabled={loading || !query.trim()}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 p-2.5 bg-brand-pink text-white rounded-full hover:scale-110 active:scale-95 disabled:opacity-50 disabled:scale-100 transition-all"
-                  >
-                    {loading ? <Loader2 className="animate-spin" size={18} /> : <Search size={18} />}
-                  </button>
-                </div>
-                <div className="flex flex-wrap gap-3">
-                  {["Explain auth flow", "Find performance bottlenecks", "Map external APIs", "Review API client resilience", "Explain the data layer"].map((q, i) => (
-                    <button key={i} onClick={() => handleAskBob(q)} className="text-[10px] font-black uppercase text-brand-indigo/60 hover:text-brand-pink transition-colors border-b border-dashed border-brand-indigo/20 hover:border-brand-pink">{q}</button>
-                  ))}
-                </div>
+                {exMode === "chat" && <>
+                  <div className="relative">
+                    <input type="text" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === "Enter") handleAskBob(); }}
+                      placeholder="Ask Bob about any module, logic, or transformation..."
+                      className="w-full bg-brand-bg dark:bg-brand-dark-bg p-4 pr-14 rounded-full border-2 border-brand-black dark:border-white font-bold focus:outline-none focus:ring-4 focus:ring-brand-pink/20 dark:text-white"
+                    />
+                    <button onClick={() => handleAskBob()} disabled={loading || !query.trim()}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 p-2.5 bg-brand-pink text-white rounded-full hover:scale-110 active:scale-95 disabled:opacity-50 disabled:scale-100 transition-all"
+                    >
+                      {loading ? <Loader2 className="animate-spin" size={18} /> : <Search size={18} />}
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap gap-3">
+                    {["Explain auth flow", "Find performance bottlenecks", "Map external APIs", "Review API client resilience", "Explain the data layer"].map((q, i) => (
+                      <button key={i} onClick={() => handleAskBob(q)} className="text-[10px] font-black uppercase text-brand-indigo/60 hover:text-brand-pink transition-colors border-b border-dashed border-brand-indigo/20 hover:border-brand-pink">{q}</button>
+                    ))}
+                  </div>
+                </>}
+
+                {exMode === "review" && (
+                  <div className="space-y-4">
+                    <textarea value={reviewInput} onChange={e=>setReviewInput(e.target.value)} rows={12}
+                      placeholder="// Paste the code you want Bob to review as a senior engineer..."
+                      className="w-full bg-brand-bg dark:bg-brand-dark-bg border-2 border-brand-black dark:border-white rounded-xl p-4 font-mono text-sm resize-none focus:outline-none focus:ring-4 focus:ring-brand-pink/20 dark:text-white"
+                    />
+                    <motion.button whileHover={{scale:1.02}} onClick={handleCodeReview} disabled={reviewLoading||!reviewInput.trim()}
+                      className="w-full py-3.5 bg-brand-pink text-white rounded-xl border-2 border-brand-black dark:border-white shadow-brutal font-black uppercase text-sm flex items-center justify-center gap-2 disabled:opacity-50 hover:bg-brand-indigo hover:shadow-none hover:translate-x-[4px] hover:translate-y-[4px] transition-all"
+                    >
+                      {reviewLoading?<><Loader2 size={16} className="animate-spin"/>Bob is reviewing...</>:<><Eye size={16}/>Submit for Code Review</>}
+                    </motion.button>
+                    <AnimatePresence>
+                      {reviewResult && (
+                        <motion.div initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} className="space-y-4">
+                          <div className={`p-5 rounded-2xl border-2 flex items-center justify-between ${reviewResult.verdict==="Approve"?"bg-brand-teal/10 border-brand-teal/30":reviewResult.verdict==="Request Changes"?"bg-brand-pink/10 border-brand-pink/30":"bg-brand-yellow/10 border-brand-yellow/30"}`}>
+                            <div>
+                              <p className={`font-black uppercase italic text-xl ${reviewResult.verdict==="Approve"?"text-brand-teal":reviewResult.verdict==="Request Changes"?"text-brand-pink":"text-brand-yellow"}`}>{reviewResult.verdict}</p>
+                              <p className="text-xs font-medium text-brand-black/60 dark:text-white/50 mt-1 max-w-sm">{reviewResult.summary}</p>
+                            </div>
+                            <div className="text-right shrink-0">
+                              <p className={`text-4xl font-black italic ${reviewResult.score>=80?"text-brand-teal":reviewResult.score>=60?"text-brand-yellow":"text-brand-pink"}`}>{reviewResult.score}</p>
+                              <p className="text-[10px] font-black uppercase text-brand-black/40 dark:text-white/40">/100</p>
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-2 gap-4">
+                            <div className="bg-brand-teal/5 border-2 border-brand-teal/20 rounded-2xl p-4">
+                              <p className="text-[10px] font-black uppercase tracking-widest text-brand-teal mb-3">What Is Good</p>
+                              {reviewResult.whatIsGood.map((g,i)=><div key={i} className="flex items-start gap-2 mb-2"><CheckCircle2 size={12} className="text-brand-teal mt-0.5 shrink-0"/><span className="text-xs dark:text-white/80">{g}</span></div>)}
+                            </div>
+                            <div className="bg-brand-pink/5 border-2 border-brand-pink/20 rounded-2xl p-4">
+                              <p className="text-[10px] font-black uppercase tracking-widest text-brand-pink mb-3">Needs Work</p>
+                              {reviewResult.whatNeedsWork.map((w,i)=><div key={i} className="flex items-start gap-2 mb-2"><AlertTriangle size={12} className="text-brand-pink mt-0.5 shrink-0"/><span className="text-xs dark:text-white/80">{w}</span></div>)}
+                            </div>
+                          </div>
+                          {reviewResult.risks.length>0 && <div className="bg-brand-yellow/5 border-2 border-brand-yellow/20 rounded-2xl p-4">
+                            <p className="text-[10px] font-black uppercase tracking-widest text-brand-yellow mb-3">Risks</p>
+                            {reviewResult.risks.map((r,i)=><div key={i} className="flex items-start gap-2 mb-2"><Shield size={12} className="text-brand-yellow mt-0.5 shrink-0"/><span className="text-xs dark:text-white/80">{r}</span></div>)}
+                          </div>}
+                          <button onClick={()=>{setReviewResult(null);setReviewInput("");}} className="w-full py-3 border-2 border-brand-black/20 dark:border-white/20 rounded-xl font-black text-xs uppercase dark:text-white hover:border-brand-black dark:hover:border-white transition-all">Review Another</button>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                )}
               </motion.div>
             )}
 
@@ -1080,8 +1272,106 @@ export default function App() {
           </AnimatePresence>
         </div>
 
+            {/* Onboarding tab */}
+            {activeTab === "onboarding" && (
+              <motion.div key="onboarding" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-6">
+                <div className="bg-white dark:bg-brand-dark-card border-2 border-brand-black/10 dark:border-white/10 rounded-2xl p-6 flex flex-col gap-6">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <div>
+                      <h3 className="text-2xl font-black italic flex items-center gap-3 dark:text-white"><UserCheck className="text-brand-yellow" size={24} /> Bob's Onboarding Assistant</h3>
+                      <p className="text-xs text-brand-black/50 dark:text-white/40 mt-1 font-medium uppercase tracking-widest">Get any new developer up to speed in 60 seconds</p>
+                    </div>
+                    {githubInfo && <span className="text-[10px] font-black uppercase bg-brand-teal/10 text-brand-teal border border-brand-teal/30 px-3 py-1.5 rounded-full">Using: {githubInfo.name}</span>}
+                  </div>
+                  {!githubInfo && (
+                    <textarea value={onboardingCtx} onChange={e=>setOnboardingCtx(e.target.value)} rows={4}
+                      placeholder="Paste project context, or connect a GitHub repo above for automatic context..."
+                      className="w-full bg-brand-bg dark:bg-brand-dark-bg border-2 border-brand-black dark:border-white rounded-xl px-4 py-3 text-sm resize-none focus:outline-none focus:ring-4 focus:ring-brand-yellow/20 dark:text-white"
+                    />
+                  )}
+                  <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={handleOnboarding} disabled={onboardingLoading}
+                    className="w-full py-4 rounded-xl border-2 border-brand-black dark:border-white shadow-brutal font-black uppercase text-sm flex items-center justify-center gap-3 disabled:opacity-50 bg-brand-yellow text-brand-black hover:bg-brand-indigo hover:text-white hover:shadow-none hover:translate-x-[4px] hover:translate-y-[4px] transition-all"
+                  >
+                    {onboardingLoading?<><Loader2 size={18} className="animate-spin"/>Bob is mapping the codebase...</>:<><UserCheck size={18}/>Generate Onboarding Guide</>}
+                  </motion.button>
+                  <AnimatePresence>
+                    {onboardingGuide && (
+                      <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
+                        <div className="p-5 bg-brand-indigo rounded-2xl text-white">
+                          <p className="text-[10px] font-black uppercase tracking-widest text-white/60 mb-1">{onboardingGuide.repoName}</p>
+                          <p className="text-sm font-medium leading-relaxed">{onboardingGuide.overview}</p>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          {onboardingGuide.sections.map((s, i) => (
+                            <div key={i} className="bg-brand-bg dark:bg-brand-dark-bg border-2 border-brand-black/10 dark:border-white/10 rounded-2xl p-5">
+                              <div className="flex items-center gap-2 mb-3"><span className="text-xl">{s.icon}</span><p className="font-black uppercase italic text-sm dark:text-white">{s.title}</p></div>
+                              <p className="text-[11px] text-brand-black/60 dark:text-white/50 mb-3 leading-relaxed">{s.content}</p>
+                              {s.items.map((item, j) => (
+                                <div key={j} className="flex items-start gap-2 mb-2"><CheckCircle2 size={11} className="text-brand-teal mt-0.5 shrink-0"/><span className="text-[11px] dark:text-white/70">{item}</span></div>
+                              ))}
+                            </div>
+                          ))}
+                        </div>
+                        <div className="p-4 bg-brand-teal/10 border-2 border-brand-teal/30 rounded-2xl">
+                          <p className="text-[10px] font-black uppercase tracking-widest text-brand-teal mb-2">Bob's First PR Recommendation</p>
+                          <p className="text-sm dark:text-white/80 leading-relaxed">{onboardingGuide.firstTask}</p>
+                        </div>
+                        <div className="flex gap-3">
+                          <button onClick={()=>{const parts=["# "+onboardingGuide.repoName,"",onboardingGuide.overview,...onboardingGuide.sections.flatMap((s:any)=>["","## "+s.icon+" "+s.title,s.content,...s.items.map((i:string)=>"- "+i)]),"","## First PR",onboardingGuide.firstTask];handleCopy(parts.join("\n"),"ob");}}
+                            className="flex-1 bg-brand-indigo text-white py-3 rounded-xl border-2 border-brand-black dark:border-white font-black text-xs uppercase flex items-center justify-center gap-2 hover:bg-brand-pink transition-colors"
+                          >{copiedId==="ob"?<><Check size={12}/>Copied!</>:<><Copy size={12}/>Copy as Markdown</>}</button>
+                          <button onClick={()=>setOnboardingGuide(null)} className="px-4 py-3 border-2 border-brand-black/20 dark:border-white/20 rounded-xl font-black text-xs uppercase dark:text-white hover:border-brand-black dark:hover:border-white transition-all">Reset</button>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              </motion.div>
+            )}
+
         {/* Sidebar */}
         <aside className="lg:col-span-4 flex flex-col gap-6">
+          {/* Health Score */}
+          <div className="bg-white dark:bg-brand-dark-card border-2 border-brand-black/10 dark:border-white/10 rounded-2xl p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-black uppercase text-xs tracking-widest dark:text-white flex items-center gap-1.5"><Gauge size={13} className="text-brand-indigo"/> Health Score</h3>
+              {!healthFetched
+                ? <button onClick={handleHealthScore} disabled={healthLoading} className="text-[10px] font-black uppercase text-brand-indigo hover:text-brand-pink transition-colors border border-brand-indigo/30 hover:border-brand-pink px-2 py-1 rounded-lg disabled:opacity-50">{healthLoading?"Scanning...":"Run Scan"}</button>
+                : <button onClick={()=>{setHealthFetched(false);setHealth(null);}} className="text-brand-black/30 dark:text-white/30 hover:text-brand-black dark:hover:text-white transition-colors"><RotateCcw size={11}/></button>
+              }
+            </div>
+            {healthLoading && <div className="flex justify-center py-3"><Loader2 size={20} className="animate-spin text-brand-indigo"/></div>}
+            {!health && !healthLoading && <p className="text-[11px] text-center text-brand-black/40 dark:text-white/40 py-2">Click Run Scan to analyze</p>}
+            {health && (
+              <div className="space-y-3">
+                <div className="flex items-center gap-3">
+                  <div className={`text-4xl font-black italic ${health.overall>=80?"text-brand-teal":health.overall>=60?"text-brand-yellow":"text-brand-pink"}`}>{health.overall}</div>
+                  <div>
+                    <div className="text-[10px] font-black text-brand-black/40 dark:text-white/40">/100</div>
+                    <div className={`text-[10px] font-black uppercase ${health.overall>=80?"text-brand-teal":health.overall>=60?"text-brand-yellow":"text-brand-pink"}`}>{health.overall>=80?"Healthy":health.overall>=60?"Moderate":"Critical"}</div>
+                  </div>
+                </div>
+                {([
+                  {l:"Test Coverage",v:health.testCoverage},
+                  {l:"Documentation",v:health.documentation},
+                  {l:"Security",     v:health.security},
+                  {l:"Code Quality", v:health.codeQuality},
+                ] as {l:string;v:number}[]).map(({l,v})=>(
+                  <div key={l}>
+                    <div className="flex justify-between text-[10px] font-bold mb-1"><span className="text-brand-black/50 dark:text-white/50">{l}</span><span className="dark:text-white">{v}</span></div>
+                    <div className="h-1.5 bg-brand-bg dark:bg-brand-dark-bg rounded-full overflow-hidden border border-brand-black/10 dark:border-white/10">
+                      <motion.div initial={{width:0}} animate={{width:`${v}%`}} transition={{duration:0.8}} className={`h-full rounded-full ${v>=60?"bg-brand-teal":v>=30?"bg-brand-yellow":"bg-brand-pink"}`}/>
+                    </div>
+                  </div>
+                ))}
+                <div className="pt-2 border-t border-brand-black/10 dark:border-white/10 space-y-2">
+                  <div className="flex items-start gap-1.5"><AlertTriangle size={10} className="text-brand-pink shrink-0 mt-0.5"/><p className="text-[10px] text-brand-black/50 dark:text-white/40 leading-tight">{health.topIssue}</p></div>
+                  <div className="flex items-start gap-1.5"><Zap size={10} className="text-brand-teal shrink-0 mt-0.5"/><p className="text-[10px] text-brand-black/50 dark:text-white/40 leading-tight">{health.quickWin}</p></div>
+                </div>
+              </div>
+            )}
+          </div>
+
           <div className="bg-brand-pink/5 dark:bg-brand-pink/10 border-brutal rounded-brutal-lg p-6 md:p-8 flex flex-col gap-6 shadow-brutal">
             <div className="flex items-center justify-between">
               <h2 className="text-2xl font-black uppercase italic flex items-center gap-2 dark:text-white"><ActivityIcon size={24} /> Live Pulse</h2>
